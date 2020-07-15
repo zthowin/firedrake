@@ -224,21 +224,17 @@ class PMGBase(PCSNESBase):
         cbcs = cctx._problem.bcs
         fbcs = fctx._problem.bcs
         # FIXME in firedrake/mg/ufl_utils.py they have fbcs=[]
-        # but in my opinion it should be cbcs=[]
-        # right now I am keeping both because coarse Dirichlet nodes are being zeroed out somewhere else
-        # and I do a dirty hack to get the values back inside injection
 
         prefix = self.ppc.getOptionsPrefix()
         mattype = PETSc.Options(prefix).getString("mg_levels_transfer_mat_type", default="matfree")
 
         if mattype == "matfree":
-            I = prolongation_matrix_matfree(fV, cV, fbcs, cbcs)
+            I = prolongation_matrix_matfree(cV, fV, cbcs, fbcs)
         elif mattype == "aij":
-            I = prolongation_matrix_aij(fV, cV, fbcs, cbcs)
+            I = prolongation_matrix_aij(cV, fV, cbcs, fbcs)
         else:
             raise ValueError("Unknown matrix type")
-        R = PETSc.Mat().createTranspose(I)
-        return R
+        return I
 
     def view(self, pc, viewer=None):
         if viewer is None:
@@ -795,11 +791,11 @@ class MixedInterpolationMatrix(object):
                          self.uf.split()[i].dat(op2.WRITE, standalone.Vf.cell_node_map()),
                          self.uc.split()[i].dat(op2.READ, standalone.Vc.cell_node_map()))
 
-        [bc.zero(self.uf) for bc in self.Vf_bcs]
+        #[bc.zero(self.uf) for bc in self.Vf_bcs]
         # FIXME the inhomogeneous value will then be added in some other part of the code
         # This fix is good only with 2 levels
         # we should use bc.apply instead as in firedrake/mg/ufl_utils.py
-        #[bc.apply(self.uf) for bc in self.Vf_bcs]
+        [bc.apply(self.uf) for bc in self.Vf_bcs]
 
         with self.uf.dat.vec_ro as xf_:
             if inc:
