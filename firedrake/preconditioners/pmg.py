@@ -115,7 +115,6 @@ class PMGBase(PCSNESBase):
         self.ppc = self.configure_pmg(pc, pdm)
         self.ppc.setFromOptions()
         self.ppc.setUp()
-        # FIXME Problably setUp throws an exception
 
     def update(self, pc):
         pass
@@ -212,7 +211,8 @@ class PMGBase(PCSNESBase):
             I = prolongation_matrix_aij(fV, cV, fbcs, cbcs)
         else:
             raise ValueError("Unknown matrix type")
-        return I, None
+        R = PETSc.Mat().createTranspose(I)
+        return R, None
 
     def create_injection(self, dmc, dmf):
         cctx = get_appctx(dmc)
@@ -221,9 +221,8 @@ class PMGBase(PCSNESBase):
         cV = cctx.J.arguments()[0].function_space()
         fV = fctx.J.arguments()[0].function_space()
 
-        cbcs = cctx._problem.bcs
-        fbcs = fctx._problem.bcs
-        # FIXME in firedrake/mg/ufl_utils.py they have fbcs=[]
+        cbcs = []
+        fbcs = []
 
         prefix = self.ppc.getOptionsPrefix()
         mattype = PETSc.Options(prefix).getString("mg_levels_transfer_mat_type", default="matfree")
@@ -679,16 +678,13 @@ class StandaloneInterpolationMatrix(object):
         with self.uc.dat.vec_wo as xc:
             xc.set(0)
 
-        # FIXME ideally bcs should not be changed before calling the kernel
-        #[bc.zero(self.uf) for bc in self.Vf_bcs]
+        [bc.zero(self.uf) for bc in self.Vf_bcs]
 
         op2.par_loop(self.restrict_kernel, self.mesh.cell_set,
                      self.uc.dat(op2.INC, self.uc.cell_node_map()),
                      self.uf.dat(op2.READ, self.uf.cell_node_map()),
                      self.weight.dat(op2.READ, self.weight.cell_node_map()))
 
-        # FIXME when restricting in p-FAS one should not zero out the Dirichlet dofs
-        # that is why we don't want to pass cbcs
         [bc.zero(self.uc) for bc in self.Vc_bcs]
 
         with self.uc.dat.vec_ro as xc:
@@ -702,20 +698,13 @@ class StandaloneInterpolationMatrix(object):
         with self.uc.dat.vec_wo as xc_:
             xc.copy(xc_)
 
-        # FIXME for injection inhomogenous values are zeroed out for some reason
-        # this is a hack to get them back, but ideally nothing should be changed before
-        # appplying the kernel
-        [bc.apply(self.uc) for bc in self.Vc_bcs]
+        [bc.zero(self.uc) for bc in self.Vc_bcs]
 
         op2.par_loop(self.prolong_kernel, self.mesh.cell_set,
                      self.uf.dat(op2.WRITE, self.Vf.cell_node_map()),
                      self.uc.dat(op2.READ, self.Vc.cell_node_map()))
 
         [bc.zero(self.uf) for bc in self.Vf_bcs]
-        # FIXME the inhomogeneous value will then be added in some other part of the code
-        # This fix is good only with 2 levels
-        # we should use bc.apply instead as in firedrake/mg/ufl_utils.py
-        #[bc.apply(self.uf) for bc in self.Vf_bcs]
 
         with self.uf.dat.vec_ro as xf_:
             if inc:
@@ -760,8 +749,7 @@ class MixedInterpolationMatrix(object):
         with self.uc.dat.vec_wo as xc:
             xc.set(0)
 
-        # FIXME ideally bcs should not be changed before calling the kernel
-        #[bc.zero(self.uf) for bc in self.Vf_bcs]
+        [bc.zero(self.uf) for bc in self.Vf_bcs]
 
         for (i, standalone) in enumerate(self.standalones):
             op2.par_loop(standalone.restrict_kernel, standalone.mesh.cell_set,
@@ -769,8 +757,6 @@ class MixedInterpolationMatrix(object):
                          self.uf.split()[i].dat(op2.READ, standalone.Vf.cell_node_map()),
                          standalone.weight.dat(op2.READ, standalone.weight.cell_node_map()))
 
-        # FIXME when restricting in p-FAS one should not zero out the Dirichlet dofs
-        # that is why we don't want to pass cbcs
         [bc.zero(self.uc) for bc in self.Vc_bcs]
 
         with self.uc.dat.vec_ro as xc:
@@ -781,21 +767,14 @@ class MixedInterpolationMatrix(object):
         with self.uc.dat.vec_wo as xc_:
             xc.copy(xc_)
 
-        # FIXME for injection inhomogenous values are zeroed out for some reason
-        # this is a hack to get them back, but ideally nothing should be changed before
-        # appplying the kernel
-        [bc.apply(self.uc) for bc in self.Vc_bcs]
+        [bc.zero(self.uc) for bc in self.Vc_bcs]
 
         for (i, standalone) in enumerate(self.standalones):
             op2.par_loop(standalone.prolong_kernel, standalone.mesh.cell_set,
                          self.uf.split()[i].dat(op2.WRITE, standalone.Vf.cell_node_map()),
                          self.uc.split()[i].dat(op2.READ, standalone.Vc.cell_node_map()))
 
-        #[bc.zero(self.uf) for bc in self.Vf_bcs]
-        # FIXME the inhomogeneous value will then be added in some other part of the code
-        # This fix is good only with 2 levels
-        # we should use bc.apply instead as in firedrake/mg/ufl_utils.py
-        [bc.apply(self.uf) for bc in self.Vf_bcs]
+        [bc.zero(self.uf) for bc in self.Vf_bcs]
 
         with self.uf.dat.vec_ro as xf_:
             if inc:
