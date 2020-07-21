@@ -59,7 +59,7 @@ class FiredrakeConfiguration(dict):
                            "slepc", "packages", "honour_pythonpath",
                            "opencascade",
                            "cuda", "cuda_dir", "cudac", "cuda_compile_flags",
-                           "petsc_int_type", "cache_dir"]
+                           "opencl", "petsc_int_type", "cache_dir"]
 
 
 def deep_update(this, that):
@@ -219,6 +219,8 @@ honoured.""",
             " to be passed to PETSc", default=None, action="store")
     parser.add_argument('--cudac', type=str, help="path of 'nvcc' "
             " to be passed to PETSc", default='/usr/bin/nvcc', action="store")
+    parser.add_argument("--opencl", action="store_true",
+                        help="Use OpenCL as backend.")
     parser.add_argument("--disable-ssh", action="store_true",
                         help="Do not attempt to use ssh to clone git repositories: fall immediately back to https.")
     parser.add_argument("--no-package-manager", action='store_false', dest="package_manager",
@@ -539,7 +541,6 @@ if options["petsc_int_type"] == "int32":
 else:
     petsc_options.add("--with-64-bit-indices")
 
-
 if args.cuda:
     petsc_options.add('--with-cuda=1')
     petsc_options.add('--with-cuda-dir={}'.format(args.cuda_dir))
@@ -547,6 +548,10 @@ if args.cuda:
     if args.cuda_compile_flags:
         petsc_options.add('--CUDAFLAGS={}'.format(args.cuda_compile_flags))
 
+if args.opencl:
+    petsc_options.add('--with-viennacl=1')
+    petsc_options.add('--download-viennacl')
+    petsc_options.add('--with-opencl=1')
 
 if options.get("mpiexec") is not None:
     petsc_options.add("--with-mpiexec={}".format(options["mpiexec"]))
@@ -1469,6 +1474,9 @@ if mode == "install":
 
     if args.cuda:
         run_pip_install(["pycuda"])
+
+    if args.opencl:
+        run_pip_install(["pyopencl"])
 
 else:
     # Update mode
