@@ -231,6 +231,7 @@ class PMGBase(PCSNESBase):
             I = prolongation_matrix_matfree(cV, fV, cbcs, fbcs)
         elif mattype == "aij":
             I = prolongation_matrix_aij(cV, fV, cbcs, fbcs)
+            I = PETSc.Mat().createTranspose(I) # FIXME
         else:
             raise ValueError("Unknown matrix type")
         return I
@@ -678,7 +679,7 @@ class StandaloneInterpolationMatrix(object):
         with self.uc.dat.vec_wo as xc:
             xc.set(0)
 
-        [bc.zero(self.uf) for bc in self.Vf_bcs]
+        #[bc.zero(self.uf) for bc in self.Vf_bcs]
 
         op2.par_loop(self.restrict_kernel, self.mesh.cell_set,
                      self.uc.dat(op2.INC, self.uc.cell_node_map()),
@@ -698,7 +699,7 @@ class StandaloneInterpolationMatrix(object):
         with self.uc.dat.vec_wo as xc_:
             xc.copy(xc_)
 
-        [bc.zero(self.uc) for bc in self.Vc_bcs]
+        #[bc.zero(self.uc) for bc in self.Vc_bcs]
 
         op2.par_loop(self.prolong_kernel, self.mesh.cell_set,
                      self.uf.dat(op2.WRITE, self.Vf.cell_node_map()),
@@ -749,7 +750,7 @@ class MixedInterpolationMatrix(object):
         with self.uc.dat.vec_wo as xc:
             xc.set(0)
 
-        [bc.zero(self.uf) for bc in self.Vf_bcs]
+        #[bc.zero(self.uf) for bc in self.Vf_bcs]
 
         for (i, standalone) in enumerate(self.standalones):
             op2.par_loop(standalone.restrict_kernel, standalone.mesh.cell_set,
@@ -767,7 +768,7 @@ class MixedInterpolationMatrix(object):
         with self.uc.dat.vec_wo as xc_:
             xc.copy(xc_)
 
-        [bc.zero(self.uc) for bc in self.Vc_bcs]
+        #[bc.zero(self.uc) for bc in self.Vc_bcs]
 
         for (i, standalone) in enumerate(self.standalones):
             op2.par_loop(standalone.prolong_kernel, standalone.mesh.cell_set,
