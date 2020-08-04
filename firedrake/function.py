@@ -623,6 +623,8 @@ class Function(ufl.Coefficient, FunctionMixin):
         :arg backend: An instance of
         :class:`pyop2.backend.AbstractComputeBackend`.
         """
+        # FIXME: This should conform to the new offloading pattern.
+        raise NotImplementedError()
         self._data.dat.ensure_availability_on(backend)
         self.function_space().mesh().coordinates._data.dat.ensure_availability_on(
                 backend)

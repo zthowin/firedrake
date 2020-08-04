@@ -163,13 +163,15 @@ def get_map_cache(mesh, key):
     """Get the map cache for this mesh.
 
     :arg mesh: The mesh to use.
-    :arg key: a tuple (entity_set, compute_backend) where ``entity_set`` is an
-        instance of :class:`pyop2.Set` of entities to map from and
-        ``compute_backend`` is an instance of
-        :class:`pyop2.backend.AbstractComputeBackend` referring to the backend
-        where the map reides on.
+    :arg key: a (entity_dofs, real_tensorproduct) tuple where
+        entity_dofs is Canonicalised entity_dofs (see :func:`entity_dofs_key`);
+        real_tensorproduct is True if the function space is a degenerate
+        fs x Real tensorproduct.
     """
-    return {}
+    return {mesh.cell_set: None,
+            mesh.interior_facets.set: None,
+            mesh.exterior_facets.set: None,
+            "boundary_node": None}
 
 
 @cached
@@ -451,7 +453,7 @@ class FunctionSpaceData(object):
             key = (entity_dofs_key(V.finat_element.entity_dofs()), sdkey, method)
             return get_boundary_nodes(V.mesh(), key, V)
 
-    def get_map(self, V, entity_set, map_arity, name, offset, backend=None):
+    def get_map(self, V, entity_set, map_arity, name, offset):
         """Return a :class:`pyop2.Map` from some topological entity to
         degrees of freedom.
 
@@ -462,28 +464,17 @@ class FunctionSpaceData(object):
         :arg offset: Map offset (for extruded)."""
         # V is only really used for error checking and "name".
         assert len(V) == 1, "get_map should not be called on MixedFunctionSpace"
-
-        if backend is None:
-            backend = op2.compute_backend
-
-        from pyop2.sequential import CPUBackend, cpu_backend
-
         entity_node_list = self.entity_node_lists[entity_set]
 
-        val = self.map_cache.get((entity_set, backend))
+        val = self.map_cache[entity_set]
         if val is None:
-            if isinstance(backend, CPUBackend):
-                val = backend.Map(entity_set, self.node_set,
-                              map_arity,
-                              entity_node_list,
-                              ("%s_"+name) % (V.name),
-                              offset=offset)
-            else:
-                host_map = self.get_map(V, entity_set, map_arity, name,
-                    offset, cpu_backend)
-                val = backend.Map(host_map)
+            val = op2.compute_backend.Map(entity_set, self.node_set,
+                                          map_arity,
+                                          entity_node_list,
+                                          ("%s_"+name) % (V.name),
+                                          offset=offset)
 
-        self.map_cache[(entity_set, backend)] = val
+            self.map_cache[entity_set] = val
         return val
 
 

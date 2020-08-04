@@ -1,20 +1,29 @@
 from contextlib import contextmanager
 
 
-@contextmanager
-def offloading(backend):
+def set_offloading_backend(backend):
     """
-    Switches the compute backend to ``backend`` within the context block.
+    Must be called before performing any data allocation firedrake operations.
+    To mark any operations for offloading the operations should be wrapped
+    within :func:`~firedrake.offload.offloading` context.
 
-    Operations (for ex. assemble, interpolation, etc) within the offloading
-    region will be executed on ``backend``. Any backend specific object
-    instantiated in the context will be allocated on ``backend``.
+    :arg backend: An instance of :class:`pyop2.backend.AbstractComputeBackend`.
     """
     from pyop2 import op2
-    preoffloading_backend = op2.compute_backend
-
+    from pyop2.backend import AbstractComputeBackend
+    assert isinstance(backend, AbstractComputeBackend)
     op2.compute_backend = backend
-    yield
 
-    op2.compute_backend = preoffloading_backend
+
+@contextmanager
+def offloading():
+    """
+    Operations (for ex. assemble, interpolation, etc) within the offloading
+    region will be executed on backend as previously set by
+    :func:`~firedrake.offload.set_offloading_backend`.
+    """
+    from pyop2 import op2
+    op2.compute_backend.turn_on_offloading()
+    yield
+    op2.compute_backend.turn_off_offloading()
     return

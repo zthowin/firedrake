@@ -8,30 +8,6 @@ import firedrake
 from firedrake.cython import mgimpl as impl
 
 
-def get_or_set_mg_hierarchy_map_cache(cache_dict, entity_dofs_key, create_map_on_cpu):
-    """
-    :arg cache_dict: An instance of :class:`dict` that maps from tuple
-        ``(entity_dofs_key, compute_backend)`` to the corresponding map.
-    :arg create_map_on_cpu: A callable that takes no argument and returns the map
-        on the CPU backend.
-    :returns map: An instance of :class:`pyop2.base.Map`.
-    """
-    try:
-        return cache_dict[(entity_dofs_key, op2.compute_backend)]
-    except KeyError:
-
-        from pyop2.sequential import cpu_backend
-        if (entity_dofs_key, cpu_backend) not in cache_dict:
-            cache_dict[(entity_dofs_key, cpu_backend)] = create_map_on_cpu()
-
-        map_on_cpu = cache_dict[(entity_dofs_key, cpu_backend)]
-
-        if (entity_dofs_key, op2.compute_backend) not in cache_dict:
-            cache_dict[(entity_dofs_key, op2.compute_backend)] = op2.compute_backend.Map(map_on_cpu)
-
-        return cache_dict[(entity_dofs_key, op2.compute_backend)]
-
-
 def fine_node_to_coarse_node_map(Vf, Vc):
     if len(Vf) > 1:
         assert len(Vf) == len(Vc)
@@ -54,9 +30,9 @@ def fine_node_to_coarse_node_map(Vf, Vc):
            + (levelc, levelf))
 
     cache = mesh._shared_data_cache["hierarchy_fine_node_to_coarse_node_map"]
-
-    def create_map_on_cpu():
-        from pyop2.sequential import cpu_backend
+    try:
+        return cache[key]
+    except KeyError:
         assert Vc.extruded == Vf.extruded
         if Vc.mesh().variable_layers or Vf.mesh().variable_layers:
             raise NotImplementedError("Not implemented for variable layers, sorry")
@@ -65,10 +41,9 @@ def fine_node_to_coarse_node_map(Vf, Vc):
 
         fine_to_coarse = hierarchy.fine_to_coarse_cells[levelf]
         fine_to_coarse_nodes = impl.fine_to_coarse_nodes(Vf, Vc, fine_to_coarse)
-        return cpu_backend.Map(Vf.node_set, Vc.node_set,
-            fine_to_coarse_nodes.shape[1], values=fine_to_coarse_nodes)
-
-    return get_or_set_mg_hierarchy_map_cache(cache, key, create_map_on_cpu)
+        return cache.setdefault(key, op2.compute_backend.Map(Vf.node_set, Vc.node_set,
+                                                             fine_to_coarse_nodes.shape[1],
+                                                             values=fine_to_coarse_nodes))
 
 
 def coarse_node_to_fine_node_map(Vc, Vf):
@@ -93,8 +68,9 @@ def coarse_node_to_fine_node_map(Vc, Vf):
            + (levelc, levelf))
 
     cache = mesh._shared_data_cache["hierarchy_coarse_node_to_fine_node_map"]
-    def create_map_on_cpu():
-        from pyop2.sequential import cpu_backend
+    try:
+        return cache[key]
+    except KeyError:
         assert Vc.extruded == Vf.extruded
         if Vc.mesh().variable_layers or Vf.mesh().variable_layers:
             raise NotImplementedError("Not implemented for variable layers, sorry")
@@ -103,10 +79,9 @@ def coarse_node_to_fine_node_map(Vc, Vf):
 
         coarse_to_fine = hierarchy.coarse_to_fine_cells[levelc]
         coarse_to_fine_nodes = impl.coarse_to_fine_nodes(Vc, Vf, coarse_to_fine)
-        return cpu_backend.Map(Vc.node_set, Vf.node_set,
-                coarse_to_fine_nodes.shape[1], values=coarse_to_fine_nodes)
-
-    return get_or_set_mg_hierarchy_map_cache(cache, key, create_map_on_cpu)
+        return cache.setdefault(key, op2.compute_backend.Map(Vc.node_set, Vf.node_set,
+                                                             coarse_to_fine_nodes.shape[1],
+                                                             values=coarse_to_fine_nodes))
 
 def coarse_cell_to_fine_node_map(Vc, Vf):
     if len(Vf) > 1:
@@ -127,9 +102,9 @@ def coarse_cell_to_fine_node_map(Vc, Vf):
 
     key = (entity_dofs_key(Vf.finat_element.entity_dofs()) + (levelc, levelf))
     cache = mesh._shared_data_cache["hierarchy_coarse_cell_to_fine_node_map"]
-
-    def create_map_on_cpu():
-        from pyop2.sequential import cpu_backend
+    try:
+        return cache[key]
+    except KeyError:
         assert Vc.extruded == Vf.extruded
         if Vc.mesh().variable_layers or Vf.mesh().variable_layers:
             raise NotImplementedError("Not implemented for variable layers, sorry")
@@ -147,14 +122,12 @@ def coarse_cell_to_fine_node_map(Vc, Vf):
         offset = Vf.offset
         if offset is not None:
             offset = numpy.tile(offset, ncell)
-        return cpu_backend.Map(iterset, Vf.node_set, arity=arity,
-                values=coarse_to_fine_nodes, offset=offset)
-
-    return get_or_set_mg_hierarchy_map_cache(cache, key, create_map_on_cpu)
+        return cache.setdefault(key, op2.compute_backend.Map(iterset, Vf.node_set, arity=arity,
+                                                             values=coarse_to_fine_nodes,
+                                                             offset=offset))
 
 
 def physical_node_locations(V):
-    #TODO: Do we need to cache this per backend as well?
     element = V.ufl_element()
     if element.value_shape():
         assert isinstance(element, (ufl.VectorElement, ufl.TensorElement))
