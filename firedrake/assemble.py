@@ -405,7 +405,7 @@ def get_scalar(arguments, *, tensor=None):
     if tensor is not None:
         raise ValueError("Can't assemble 0-form into existing tensor")
 
-    tensor = op2.Global(1, [0.0])
+    tensor = op2.compute_backend.Global(1, [0.0])
     return tensor, (), lambda: tensor.data[0]
 
 
@@ -615,7 +615,7 @@ def create_parloops(expr, create_op2arg, *, assembly_rank=None, diagonal=False,
             assert integral_type == "cell"
             extra_args.append(m.cell_to_facets(op2.READ))
         if pass_layer_arg:
-            c = op2.Global(1, itspace.layers-2, dtype=numpy.dtype(numpy.int32))
+            c = op2.compute_backend.Global(1, itspace.layers-2, dtype=numpy.dtype(numpy.int32))
             o = c(op2.READ)
             extra_args.append(o)
 
