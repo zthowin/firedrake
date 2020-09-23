@@ -199,7 +199,7 @@ def get_topology(coordinates):
             def vrange(cell_layers):
                 return numpy.repeat(cell_layers - cell_layers.cumsum(),
                                     cell_layers) + numpy.arange(cell_layers.sum())
-            offsets = numpy.outer(vrange(cell_layers), offsetMap)
+            offsets = numpy.outer(vrange(cell_layers), offsetMap).astype(IntType)
             num_cells = cell_layers.sum()
         else:
             cell_layers = mesh.cell_set.layers - 1
@@ -395,8 +395,8 @@ class File(object):
                 f.write(self._header)
                 f.write(self._footer)
         elif self.comm.rank == 0 and mode == "a":
-            import xml.etree.ElementTree as ET
-            tree = ET.parse(os.path.abspath(filename))
+            import xml.etree.ElementTree as ElTree
+            tree = ElTree.parse(os.path.abspath(filename))
             # Count how many the file already has
             for parent in tree.iter():
                 for child in list(parent):
