@@ -26,7 +26,7 @@ jobs:
            complex: --complex
     env:
       FIREDRAKE_CI_TESTS: 1
-      PETSC_CONFIGURE_OPTIONS: --with-make-np=12 --download-mpich-device=ch3:sock
+      PETSC_CONFIGURE_OPTIONS: --with-make-np=12 --download-mpich-device=ch3:sock --download-cmake
       OMP_NUM_THREADS: 1
       OPENBLAS_NUM_THREADS: 1
       COMPLEX: ${{ matrix.complex }}
@@ -44,7 +44,7 @@ jobs:
       - name: Build Firedrake
         run: |
           cd ..
-          ./firedrake/scripts/firedrake-install $COMPLEX --venv-name build --tinyasm --disable-ssh --minimal-petsc --slepc --documentation-dependencies --install thetis --install gusto --install icepack --install irksome --install femlium --no-package-manager|| (cat firedrake-install.log && /bin/false)
+          ./firedrake/scripts/firedrake-install $COMPLEX --venv-name build --tinyasm --disable-ssh --minimal-petsc --slepc --documentation-dependencies --install thetis --install gusto --install icepack --install irksome --install femlium --no-package-manager --package-branch petsc ksagiyam/dmplex_path_change --package-branch slepc ksagiyam/merge_upstream || (cat firedrake-install.log && /bin/false)
       - name: Install test dependencies
         run: |
           . ../build/bin/activate
