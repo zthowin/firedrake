@@ -48,13 +48,13 @@ def make_extruded_coords(extruded_topology, base_coords, ext_coords,
         raise RuntimeError('Extrusion of coordinates is only possible for a P1 or P1dg interval unless a custom kernel is provided')
     layer_height = op2.compute_backend.Global(1, layer_height, dtype=RealType)
     if kernel is not None:
-        op2.ParLoop(kernel,
-                    ext_coords.cell_set,
-                    ext_coords.dat(op2.WRITE, ext_coords.cell_node_map()),
-                    base_coords.dat(op2.READ, base_coords.cell_node_map()),
-                    layer_height(op2.READ),
-                    pass_layer_arg=True,
-                    is_loopy_kernel=True).compute()
+        op2.compute_backend.ParLoop(kernel,
+                                    ext_coords.cell_set,
+                                    ext_coords.dat(op2.WRITE, ext_coords.cell_node_map()),
+                                    base_coords.dat(op2.READ, base_coords.cell_node_map()),
+                                    layer_height(op2.READ),
+                                    pass_layer_arg=True,
+                                    is_loopy_kernel=True).compute()
         return
     ext_fe = create_element(ext_coords.ufl_element())
     ext_shape = ext_fe.index_shape

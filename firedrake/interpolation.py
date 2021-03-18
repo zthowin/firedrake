@@ -292,7 +292,7 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
         if domain is not None and domain.topology != mesh.topology:
             raise NotImplementedError("Interpolation onto another mesh not supported.")
 
-    parloop = op2.ParLoop(*parloop_args).compute
+    parloop = op2.compute_backend.ParLoop(*parloop_args).compute
     if isinstance(tensor, op2.Mat):
         return parloop, tensor.assemble
     else:

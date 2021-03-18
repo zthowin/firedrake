@@ -600,7 +600,7 @@ class AbstractMeshTopology(object, metaclass=abc.ABCMeta):
                 indices = dmcommon.get_cell_markers(self.topology_dm,
                                                     self._cell_numbering,
                                                     subdomain_id)
-            return self._subsets.setdefault(key, op2.Subset(self.cell_set, indices))
+            return self._subsets.setdefault(key, op2.compute_backend.Subset(self.cell_set, indices))
 
     def measure_set(self, integral_type, subdomain_id,
                     all_integer_subdomain_ids=None):
@@ -1301,7 +1301,7 @@ class VertexOnlyMeshTopology(AbstractMeshTopology):
     @utils.cached_property
     def cell_set(self):
         size = list(self._entity_classes[self.cell_dimension(), :])
-        return op2.Set(size, "Cells", comm=self.comm)
+        return op2.compute_backend.Set(size, "Cells", comm=self.comm)
 
 
 class MeshGeometry(ufl.Mesh, MeshGeometryMixin):
