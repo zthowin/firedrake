@@ -108,10 +108,10 @@ class IndexRelabeller(MultiFunction):
     def __init__(self):
         super().__init__()
         self._reset()
-        self.index_cache = defaultdict(lambda: Index(next(self.count)))
 
     def _reset(self):
-        self.count = itertools.count()
+        count = itertools.count()
+        self.index_cache = defaultdict(lambda: Index(next(count)))
 
     expr = MultiFunction.reuse_if_untouched
 
@@ -362,7 +362,7 @@ def compile_to_gem(expr, translator):
     if any(type(s.ufl_element()) is ufl.MixedElement for s in spaces if s is not None):
         raise ValueError("Not expecting a mixed space at this point, "
                          "did you forget to index a function with .sub(...)?")
-    if len(set(s.finat_element for s in spaces if s is not None)) != 1:
+    if len(set(s.ufl_element() for s in spaces if s is not None)) != 1:
         raise ValueError("All coefficients must be defined on the same space")
     lvalue = expr.lvalue
     rvalue = expr.rvalue
@@ -466,6 +466,7 @@ def evaluate_expression(expr, subset=None):
             slow_key = expr.slow_key
             try:
                 arguments = cache[slow_key]
+                cache[fast_key] = arguments
             except KeyError:
                 arguments = None
         if arguments is not None:

@@ -5,7 +5,7 @@ import cython
 import numpy as np
 from firedrake.petsc import PETSc
 from mpi4py import MPI
-from pyop2.datatypes import IntType
+from firedrake.utils import IntType, ScalarType
 from libc.string cimport memset
 from libc.stdlib cimport qsort
 
@@ -650,7 +650,7 @@ def create_section(mesh, nodes_per_entity, on_base=False):
         np.ndarray[PetscInt, ndim=2, mode="c"] layer_extents
         bint variable, extruded, on_base_
 
-    dm = mesh._topology_dm
+    dm = mesh.topology_dm
 
     if type(dm) is PETSc.DMSwarm and on_base:
         raise NotImplementedError("Vertex Only Meshes cannot be extruded.")
@@ -728,7 +728,7 @@ def get_cell_nodes(mesh,
         bint variable
         PETSc.DM dm
 
-    dm = mesh._topology_dm
+    dm = mesh.topology_dm
     variable = mesh.variable_layers
     cell_closures = mesh.cell_closure
     if variable:
@@ -817,7 +817,7 @@ def get_facet_nodes(mesh, np.ndarray[PetscInt, ndim=2, mode="c"] cell_nodes, lab
     if label not in {"interior_facets", "exterior_facets"}:
         raise ValueError("Unsupported facet label '%s'", label)
 
-    dm = mesh._topology_dm
+    dm = mesh.topology_dm
     variable = mesh.variable_layers
 
     if variable and offset is None:
@@ -1071,7 +1071,7 @@ def reordered_coords(PETSc.DM dm, PETSc.Section global_numbering, shape):
     cdef:
         PetscInt v, vStart, vEnd, offset
         PetscInt i, dim = shape[1]
-        np.ndarray[PetscReal, ndim=2, mode="c"] dm_coords, coords
+        np.ndarray[PetscScalar, ndim=2, mode="c"] dm_coords, coords
 
     if type(dm) is PETSc.DMPlex:
         dm_coords = dm.getCoordinatesLocal().array.reshape(shape)
@@ -1079,7 +1079,8 @@ def reordered_coords(PETSc.DM dm, PETSc.Section global_numbering, shape):
     elif type(dm) is PETSc.DMSwarm:
         # NOTE DMSwarm coords field isn't copied so make sure
         # dm.restoreField is called too!
-        dm_coords = dm.getField("DMSwarmPIC_coor").reshape(shape)
+        # NOTE DMSwarm coords field DMSwarmPIC_coor always stored as real
+        dm_coords = dm.getField("DMSwarmPIC_coor").reshape(shape).astype(ScalarType)
         coords = np.empty_like(dm_coords)
     else:
         raise ValueError("Only DMPlex and DMSwarm are supported.")
@@ -2414,66 +2415,6 @@ def prune_sf(PETSc.SF sf):
     return pruned_sf
 
 
-def halo_begin(PETSc.SF sf, dat, MPI.Datatype dtype, reverse, MPI.Op op=MPI.SUM):
-    """Begin a halo exchange.
-
-    :arg sf: the PETSc SF to use for exchanges
-    :arg dat: the :class:`pyop2.Dat` to perform the exchange on
-    :arg dtype: an MPI datatype describing the unit of data
-    :arg reverse: should a reverse (local-to-global) exchange be
-        performed.
-
-    Forward exchanges are implemented using ``PetscSFBcastBegin``,
-    reverse exchanges with ``PetscSFReduceBegin``.
-    """
-    cdef:
-        np.ndarray buf = dat._data
-
-    # We've pruned the SF so it only references remote roots.
-    # Therefore, we can pass the same buffer for input and output.
-    # This works because the sends will be packed into buffers
-    # internally in XXXBegin and unpacked in XXXEnd.  So any
-    # subsequent changes to the input buffer are ignored for the
-    # purposes of exchanging data.  If we didn't want to rely on this
-    # implementation we would have to do a dance with temporary
-    # buffers (which is slightly inefficient and messier).
-    if reverse:
-        CHKERR(PetscSFReduceBegin(sf.sf, dtype.ob_mpi,
-                                  <const void*>buf.data,
-                                  <void *>buf.data,
-                                  op.ob_mpi))
-    else:
-        CHKERR(PetscSFBcastBegin(sf.sf, dtype.ob_mpi,
-                                 <const void *>buf.data,
-                                 <void *>buf.data))
-
-
-def halo_end(PETSc.SF sf, dat, MPI.Datatype dtype, reverse, MPI.Op op=MPI.SUM):
-    """End a halo exchange.
-
-    :arg sf: the PETSc SF to use for exchanges
-    :arg dat: the :class:`pyop2.Dat` to perform the exchange on
-    :arg dtype: an MPI datatype describing the unit of data
-    :arg reverse: should a reverse (local-to-global) exchange be
-        performed.
-
-    Forward exchanges are implemented using ``PetscSFBcastEnd``,
-    reverse exchanges with ``PetscSFReduceEnd``.
-    """
-    cdef:
-        np.ndarray buf = dat._data
-
-    if reverse:
-        CHKERR(PetscSFReduceEnd(sf.sf, dtype.ob_mpi,
-                                <const void *>buf.data,
-                                <void*>buf.data,
-                                op.ob_mpi))
-    else:
-        CHKERR(PetscSFBcastEnd(sf.sf, dtype.ob_mpi,
-                               <const void *>buf.data,
-                               <void *>buf.data))
-
-
 cdef int DMPlexGetAdjacency_Facet_Support(PETSc.PetscDM dm,
                                           PetscInt p,
                                           PetscInt *adjSize,
@@ -2677,8 +2618,8 @@ def label_pic_parent_cell_nums(PETSc.DM swarm, parentmesh):
     if type(swarm) is not PETSc.DMSwarm:
         raise ValueError("swarm must be a DMSwarm")
 
-    if parentmesh._topology_dm.handle != swarm.getCellDM().handle:
-        raise ValueError("parentmesh._topology_dm is not the swarm's CellDM")
+    if parentmesh.topology_dm.handle != swarm.getCellDM().handle:
+        raise ValueError("parentmesh.topology_dm is not the swarm's CellDM")
 
     dim = parentmesh.geometric_dimension()
 

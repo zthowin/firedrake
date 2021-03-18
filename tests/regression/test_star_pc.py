@@ -7,7 +7,9 @@ except ImportError:
     marks = pytest.mark.skip(reason="No tinyasm")
 
 
-@pytest.fixture(params=["scalar", "vector", "mixed"])
+@pytest.fixture(params=["scalar",
+                        pytest.param("vector", marks=pytest.mark.skipcomplexnoslate),
+                        "mixed"])
 def problem_type(request):
     return request.param
 
@@ -122,7 +124,7 @@ def test_star_equivalence(problem_type, backend):
         (z, p) = split(u)
         (v, q) = split(TestFunction(V))
 
-        a = inner(grad(z), grad(v))*dx - inner(p, div(v))*dx - inner(q, div(z))*dx
+        a = inner(grad(z), grad(v))*dx - inner(p, div(v))*dx - inner(div(z), q)*dx
 
         bcs = DirichletBC(V.sub(0), Constant((1., 0.)), "on_boundary")
         nsp = MixedVectorSpaceBasis(V, [V.sub(0), VectorSpaceBasis(constant=True)])
@@ -143,7 +145,9 @@ def test_star_equivalence(problem_type, backend):
                        "mg_coarse_pc_type": "python",
                        "mg_coarse_pc_python_type": "firedrake.AssembledPC",
                        "mg_coarse_assembled_pc_type": "lu",
-                       "mg_coarse_assembled_pc_factor_mat_solver_type": "mumps"}
+                       "mg_coarse_assembled_pc_factor_mat_solver_type": "mumps",
+                       "mg_coarse_assembled_mat_mumps_icntl_24": 1,
+                       "mg_coarse_assembled_mat_mumps_icntl_7": 1}
 
         comp_params = {"mat_type": "aij",
                        "snes_type": "ksponly",
@@ -165,7 +169,9 @@ def test_star_equivalence(problem_type, backend):
                        "mg_coarse_pc_type": "python",
                        "mg_coarse_pc_python_type": "firedrake.AssembledPC",
                        "mg_coarse_assembled_pc_type": "lu",
-                       "mg_coarse_assembled_pc_factor_mat_solver_type": "mumps"}
+                       "mg_coarse_assembled_pc_factor_mat_solver_type": "mumps",
+                       "mg_coarse_assembled_mat_mumps_icntl_24": 1,
+                       "mg_coarse_assembled_mat_mumps_icntl_7": 1}
 
     star_params["mg_levels_pc_star_backend"] = backend
     nvproblem = NonlinearVariationalProblem(a, u, bcs=bcs)
