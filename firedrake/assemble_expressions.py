@@ -11,7 +11,7 @@ from gem.impero_utils import compile_gem, preprocess_gem
 from gem.node import MemoizerArg
 from gem.node import traversal as gem_traversal
 from pyop2 import op2
-from pyop2.sequential import Arg
+from pyop2.legacy import DatPayload
 from tsfc import ufl2gem
 from tsfc.loopy import generate
 from tsfc.ufl_utils import ufl_reuse_if_untouched
@@ -288,13 +288,13 @@ class Assign(object):
         """Tuple of par_loop arguments for the expression."""
         args = []
         if isinstance(self, AugmentedAssign) or self.lvalue in self.rcoefficients:
-            args.append(Arg(weakref.ref(self.lvalue.dat), access=op2.RW))
+            args.append(DatPayload(weakref.ref(self.lvalue.dat), access=op2.RW))
         else:
-            args.append(Arg(weakref.ref(self.lvalue.dat), access=op2.WRITE))
+            args.append(DatPayload(weakref.ref(self.lvalue.dat), access=op2.WRITE))
         for c in self.rcoefficients:
             if c.dat == self.lvalue.dat:
                 continue
-            args.append(Arg(weakref.ref(c.dat), access=op2.READ))
+            args.append(DatPayload(weakref.ref(c.dat), access=op2.READ))
         return tuple(args)
 
     @cached_property

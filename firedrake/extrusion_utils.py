@@ -63,13 +63,13 @@ def make_extruded_coords(extruded_topology, base_coords, ext_coords,
     layer_height = op2.Global(layer_heights, layer_height, dtype=RealType)
 
     if kernel is not None:
-        op2.ParLoop(kernel,
-                    ext_coords.cell_set,
-                    ext_coords.dat(op2.WRITE, ext_coords.cell_node_map()),
-                    base_coords.dat(op2.READ, base_coords.cell_node_map()),
-                    layer_height(op2.READ),
-                    pass_layer_arg=True,
-                    is_loopy_kernel=True).compute()
+        op2.par_loop(kernel,
+                     ext_coords.cell_set,
+                     ext_coords.dat(op2.WRITE, ext_coords.cell_node_map()),
+                     base_coords.dat(op2.READ, base_coords.cell_node_map()),
+                     layer_height(op2.READ),
+                     pass_layer_arg=True,
+                     is_loopy_kernel=True)
         return
     ext_fe = create_element(ext_coords.ufl_element())
     ext_shape = ext_fe.index_shape
@@ -222,13 +222,13 @@ def make_extruded_coords(extruded_topology, base_coords, ext_coords,
         raise NotImplementedError('Unsupported extrusion type "%s"' % extrusion_type)
 
     kernel = op2.Kernel(ast, name)
-    op2.ParLoop(kernel,
-                ext_coords.cell_set,
-                ext_coords.dat(op2.WRITE, ext_coords.cell_node_map()),
-                base_coords.dat(op2.READ, base_coords.cell_node_map()),
-                layer_height(op2.READ),
-                pass_layer_arg=True,
-                is_loopy_kernel=True).compute()
+    op2.par_loop(kernel,
+                 ext_coords.cell_set,
+                 ext_coords.dat(op2.WRITE, ext_coords.cell_node_map()),
+                 base_coords.dat(op2.READ, base_coords.cell_node_map()),
+                 layer_height(op2.READ),
+                 pass_layer_arg=True,
+                 is_loopy_kernel=True)
 
 
 def flat_entity_dofs(entity_dofs):

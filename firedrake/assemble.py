@@ -440,21 +440,10 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
     :arg opts: :class:`_AssemblyOpts` containing the assembly options.
     :arg assembly_rank: The appropriate :class:`_AssemblyRank`.
     """
-    # We cache the parloops on the form but since parloops (currently) hold
-    # references to large data structures (e.g. the output tensor) we only
-    # cache a single set of parloops at any one time to prevent memory leaks.
-    # This restriction does make the caching a lot simpler as we don't have to
-    # worry about hashing the arguments.
-    parloop_init_args = (expr, tensor, bcs, opts.diagonal, opts.fc_params, assembly_rank)
-    cached_init_args, cached_parloops = expr._cache.get("parloops", (None, None))
-    parloops = cached_parloops if cached_init_args == parloop_init_args else None
-
-    if not parloops:
-        parloops = _make_parloops(*parloop_init_args)
-        expr._cache["parloops"] = (parloop_init_args, parloops)
-
+    # TODO Cache the parloops properly
+    parloops = _make_parloops(expr, tensor, bcs, opts.diagonal, opts.fc_params, assembly_rank)
     for parloop in parloops:
-        parloop.compute()
+        parloop()
 
     dir_bcs = tuple(bc for bc in bcs if isinstance(bc, DirichletBC))
     _apply_dirichlet_bcs(tensor, dir_bcs, opts, assembly_rank)
@@ -809,7 +798,7 @@ def _make_parloops(expr, tensor, bcs, diagonal, fc_params, assembly_rank):
         args.extend(extra_args)
         kwargs["pass_layer_arg"] = pass_layer_arg
         try:
-            parloops.append(op2.ParLoop(*args, **kwargs))
+            parloops.append(functools.partial(op2.par_loop, *args, **kwargs))
         except MapValueError:
             raise RuntimeError("Integral measure does not match measure of all coefficients/arguments")
     return tuple(parloops)
