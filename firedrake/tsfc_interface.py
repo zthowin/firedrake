@@ -8,6 +8,7 @@ import pickle
 
 from hashlib import md5
 from os import path, environ, getuid, makedirs
+import functools
 import gzip
 import os
 import zlib
@@ -266,3 +267,24 @@ def _ensure_cachedir(comm=None):
     comm = comm or COMM_WORLD
     if comm.rank == 0:
         makedirs(TSFCKernel._cachedir, exist_ok=True)
+
+
+@functools.singledispatch
+def as_pyop2_wrapper_kernel_arg(kernel_arg):
+    """Convert a :class:`tsfc.KernelArg` to a corresponding
+    :class:`pyop2.WrapperKernelArg`.
+    """
+    raise NotImplementedError
+
+
+@as_pyop2_wrapper_kernel_arg.register
+def _(kernel_arg: tsfc.ScalarKernelArg):
+    dim, = kernel_arg.shape
+    return pyop2.GlobalWrapperKernelArg(dim)
+
+
+@as_pyop2_wrapper_kernel_arg.register
+def _(kernel_arg: tsfc.VectorKernelArg):
+    # TODO Deal with offset
+    arity, dim = kernel_arg.shape
+    return pyop2.DatWrapperKernelArg(dim, arity)

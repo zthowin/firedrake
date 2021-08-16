@@ -686,7 +686,7 @@ def _make_parloops(expr, tensor, bcs, diagonal, fc_params, assembly_rank):
             raise NotImplementedError("Diagonal + slate not supported")
         kernels = slac.compile_expression(expr, tsfc_parameters=form_compiler_parameters)
     else:
-        kernels = tsfc_interface.compile_form(expr, "form", parameters=form_compiler_parameters, diagonal=diagonal)
+        local_kernels, local_argmaps = _compile_form(expr, form_compiler_parameters, diagonal)
 
     # These will be used to correctly interpret the "otherwise"
     # subdomain
@@ -772,6 +772,18 @@ def _make_parloops(expr, tensor, bcs, diagonal, fc_params, assembly_rank):
         else:
             tensor_arg = create_op2arg(op2.INC)
 
+        wrapper_kernel, wrapper_argmap = op2.make_wrapper_kernel(
+            local_kernel,
+            [tsfc_interface.as_pyop2_wrapper_kernel_arg(arg) for arg in local_kernel.arguments]
+        )
+
+        parloop_args = [tensor_arg]
+        for wrapper_arg in wrapper_kernel.arguments:
+            coeff = local_argmap[wrapper_argmap[wrapper_arg]]
+            parloop_args.append(as_pyop2_parloop_arg(coeff))
+
+        pyop2.parloop(wrapper_kernel, parloop_args)
+
         coords = m.coordinates
         args = [kernel, itspace, tensor_arg,
                 coords.dat(op2.READ, get_map(coords))]
@@ -798,7 +810,32 @@ def _make_parloops(expr, tensor, bcs, diagonal, fc_params, assembly_rank):
         args.extend(extra_args)
         kwargs["pass_layer_arg"] = pass_layer_arg
         try:
-            parloops.append(functools.partial(op2.par_loop, *args, **kwargs))
+            parloops.append(functools.partial(op2.parloop, *args, **kwargs))
         except MapValueError:
             raise RuntimeError("Integral measure does not match measure of all coefficients/arguments")
     return tuple(parloops)
+
+
+# TODO Move to tsfc_interface
+def _compile_form(form, parameters, diagonal):
+    """TODO"""
+    tsfc_kernels, argmaps = tsfc_interface.compile_form(
+        form, "form", parameters=form_compiler_parameters, diagonal=diagonal
+    )
+
+    pyop2_kernels = []
+    for tsfc_kernel in tsfc_kernels:
+        pyop2_kernel_args = []
+        for arg in kernel.arguments:
+            access = op2.WRITE if arg.is_output else op2.READ
+            pyop2_kernel_args = pyop2.LocalKernelArg(access, arg.dtype)
+        pyop2_kernels.append(pyop2.LocalKernel(tsfc_kernel, pyop2_kernel_args))
+    return pyop2_kernels, argmaps
+
+
+@functools.singledispatch
+def as_pyop2_parloop_arg(coeff):
+    """Convert a :class:`~ufl.Coefficient` to an appropriate
+    :class:`~pyop2.ParloopArg`.
+    """
+    raise NotImplementedError
