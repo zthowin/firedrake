@@ -21,9 +21,10 @@ from .ufl_expr import TestFunction
 
 from tsfc import compile_form as tsfc_compile_form
 from tsfc.parameters import PARAMETERS as tsfc_default_parameters
+import tsfc.kernel_interface.firedrake_loopy as tsfc_utils
 
 from pyop2.caching import Cached
-from pyop2.op2 import Kernel
+from pyop2 import op2
 from pyop2.mpi import COMM_WORLD, MPI
 
 from firedrake.formmanipulation import split_form
@@ -45,7 +46,8 @@ KernelInfo = collections.namedtuple("KernelInfo",
                                      "coefficient_map",
                                      "needs_cell_facets",
                                      "pass_layer_arg",
-                                     "needs_cell_sizes"])
+                                     "needs_cell_sizes",
+                                     "tsfc_kernel_args"])
 
 
 class TSFCKernel(Cached):
@@ -140,8 +142,7 @@ class TSFCKernel(Cached):
             ast = kernel.ast
             # Unwind coefficient numbering
             numbers = tuple(number_map[c] for c in kernel.coefficient_numbers)
-            kernels.append(KernelInfo(kernel=Kernel(ast, kernel.name, opts=opts,
-                                                    requires_zeroed_output_arguments=True),
+            kernels.append(KernelInfo(kernel=as_pyop2_local_kernel(kernel, opts),
                                       integral_type=kernel.integral_type,
                                       oriented=kernel.oriented,
                                       subdomain_id=kernel.subdomain_id,
@@ -149,7 +150,8 @@ class TSFCKernel(Cached):
                                       coefficient_map=numbers,
                                       needs_cell_facets=False,
                                       pass_layer_arg=False,
-                                      needs_cell_sizes=kernel.needs_cell_sizes))
+                                      needs_cell_sizes=kernel.needs_cell_sizes,
+                                      tsfc_kernel_args=kernel.arguments))
         self.kernels = tuple(kernels)
         self._initialized = True
 
@@ -269,22 +271,22 @@ def _ensure_cachedir(comm=None):
         makedirs(TSFCKernel._cachedir, exist_ok=True)
 
 
-@functools.singledispatch
-def as_pyop2_wrapper_kernel_arg(kernel_arg):
-    """Convert a :class:`tsfc.KernelArg` to a corresponding
-    :class:`pyop2.WrapperKernelArg`.
-    """
-    raise NotImplementedError
+def as_pyop2_local_kernel(tsfc_kernel, opts):
+    """TODO"""
+    def get_access(intent):
+        return {
+            tsfc_utils.Intent.IN: op2.READ,
+            tsfc_utils.Intent.OUT: op2.INC
+        }.get(intent)
 
-
-@as_pyop2_wrapper_kernel_arg.register
-def _(kernel_arg: tsfc.ScalarKernelArg):
-    dim, = kernel_arg.shape
-    return pyop2.GlobalWrapperKernelArg(dim)
-
-
-@as_pyop2_wrapper_kernel_arg.register
-def _(kernel_arg: tsfc.VectorKernelArg):
-    # TODO Deal with offset
-    arity, dim = kernel_arg.shape
-    return pyop2.DatWrapperKernelArg(dim, arity)
+    kernel_args = [
+        op2.LocalKernelArg(get_access(arg.intent), arg.dtype)
+        for arg in tsfc_kernel.arguments
+    ]
+    return op2.Kernel(
+        tsfc_kernel.ast,
+        tsfc_kernel.name,
+        kernel_args,
+        opts=opts,
+        requires_zeroed_output_arguments=True
+    )
