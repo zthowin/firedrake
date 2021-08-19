@@ -785,10 +785,16 @@ def _do_parloop(wrapper_kernel, form, indices, kinfo, tensor, all_integer_subdom
     def _(tsfc_arg):
         return op2.DatParloopArg(mesh.interior_facets.local_facet_dat)
 
+    @as_pyop2_parloop_arg.register(tsfc_utils.ConstantKernelArg)
     @as_pyop2_parloop_arg.register(tsfc_utils.CoefficientKernelArg)
     def _(tsfc_arg):
         coeff = next(coeffs_iterator)
-        return op2.DatParloopArg(coeff.dat, _get_map(coeff.function_space(), kinfo.integral_type))
+        if tsfc_arg.rank == 0:
+            return op2.GlobalParloopArg(coeff.dat)
+        elif tsfc_arg.rank == 1:
+            return op2.DatParloopArg(coeff.dat, _get_map(coeff.function_space(), kinfo.integral_type))
+        else:
+            raise AssertionError("TODO")
 
     @as_pyop2_parloop_arg.register(tsfc_utils.LocalTensorKernelArg)
     def _(tsfc_arg):
@@ -873,11 +879,12 @@ def _(tsfc_arg):
     return op2.DatWrapperKernelArg(dim, arity)
 
 
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.ConstantKernelArg)
 @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.ExteriorFacetKernelArg)
 @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.InteriorFacetKernelArg)
 def _(tsfc_arg):
-    dim, = tsfc_arg.shape
-    return op2.DatWrapperKernelArg(dim)
+    dim = tsfc_arg.shape
+    return op2.GlobalWrapperKernelArg(dim)
 
 
 @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalTensorKernelArg)
