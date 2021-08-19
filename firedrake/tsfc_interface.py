@@ -17,6 +17,8 @@ import collections
 
 import ufl
 from ufl import Form, conj
+from firedrake.constant import Constant
+from firedrake.function import Function
 from .ufl_expr import TestFunction
 
 from tsfc import compile_form as tsfc_compile_form
@@ -225,9 +227,12 @@ def compile_form(form, name, parameters=None, split=True, interface=None, coffee
     for idx, f in iterable:
         f = _real_mangle(f)
         # Map local coefficient numbers (as seen inside the
-        # compiler) to the global coefficient numbers
-        number_map = dict((n, coefficient_numbers[c])
+        # compiler) to the split global coefficient numbers
+        number_map = dict((n, (coefficient_numbers[c], tuple(range(len(c.split())))))
+                          if isinstance(c, Function) or isinstance(c, Constant)
+                          else (n, (coefficient_numbers[c], (0,)))
                           for (n, c) in enumerate(f.coefficients()))
+
         prefix = name + "".join(map(str, (i for i in idx if i is not None)))
         kinfos = TSFCKernel(f, prefix, parameters,
                             number_map, interface, coffee, diagonal).kernels

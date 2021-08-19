@@ -447,14 +447,14 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
     # These will be used to correctly interpret the "otherwise"
     # subdomain
     all_integer_subdomain_ids = defaultdict(list)
-    for kinfo, _ in outputs:
+    for _, kinfo, _ in outputs:
         if kinfo.subdomain_id != "otherwise":
             all_integer_subdomain_ids[kinfo.integral_type].append(kinfo.subdomain_id)
     for k, v in all_integer_subdomain_ids.items():
         all_integer_subdomain_ids[kinfo] = tuple(sorted(v))
 
-    for kinfo, wrapper_kernel in outputs:
-        _do_parloop(wrapper_kernel, expr, kinfo, tensor, all_integer_subdomain_ids)
+    for indices, kinfo, wrapper_kernel in outputs:
+        _do_parloop(wrapper_kernel, expr, indices, kinfo, tensor, all_integer_subdomain_ids)
 
     dir_bcs = tuple(bc for bc in bcs if isinstance(bc, DirichletBC))
     _apply_dirichlet_bcs(tensor, dir_bcs, opts, assembly_rank)
@@ -744,11 +744,11 @@ def _make_wrapper_kernels(expr, tensor, bcs, diagonal, fc_params, assembly_rank)
             pass_layer_arg=pass_layer_arg
         )
 
-        outputs.append((kinfo, wrapper_kernel))
+        outputs.append((indices, kinfo, wrapper_kernel))
     return outputs
 
 
-def _do_parloop(wrapper_kernel, form, kinfo, tensor, all_integer_subdomain_ids):
+def _do_parloop(wrapper_kernel, form, indices, kinfo, tensor, all_integer_subdomain_ids):
     """TODO"""
 
     @functools.singledispatch
@@ -761,18 +761,21 @@ def _do_parloop(wrapper_kernel, form, kinfo, tensor, all_integer_subdomain_ids):
     @as_pyop2_parloop_arg.register(tsfc_utils.CoordinatesKernelArg)
     def _(tsfc_arg):
         func = mesh.coordinates
-        return op2.DatParloopArg(func.dat, _get_map(func, kinfo.integral_type))
+        map_ = _get_map(func.function_space(), kinfo.integral_type)
+        return op2.DatParloopArg(func.dat, map_)
 
     @as_pyop2_parloop_arg.register(tsfc_utils.CellOrientationsKernelArg)
     def _(tsfc_arg):
         # TODO Make cell_orientations a property for tidiness
         func = mesh.cell_orientations()
-        return op2.DatParloopArg(func.dat, _get_map(func, kinfo.integral_type))
+        map_ = _get_map(func.function_space(), kinfo.integral_type)
+        return op2.DatParloopArg(func.dat, map_)
 
     @as_pyop2_parloop_arg.register(tsfc_utils.CellSizesKernelArg)
     def _(tsfc_arg):
         func = mesh.cell_sizes
-        return op2.DatParloopArg(func.dat, _get_map(func, kinfo.integral_type))
+        map_ = _get_map(func.function_space(), kinfo.integral_type)
+        return op2.DatParloopArg(func.dat, map_)
 
     @as_pyop2_parloop_arg.register(tsfc_utils.ExteriorFacetKernelArg)
     def _(tsfc_arg):
@@ -784,8 +787,8 @@ def _do_parloop(wrapper_kernel, form, kinfo, tensor, all_integer_subdomain_ids):
 
     @as_pyop2_parloop_arg.register(tsfc_utils.CoefficientKernelArg)
     def _(tsfc_arg):
-        coeff = next(coeffs)
-        return op2.DatParloopArg(coeff.dat, _get_map(coeff, kinfo.integral_type))
+        coeff = next(coeffs_iterator)
+        return op2.DatParloopArg(coeff.dat, _get_map(coeff.function_space(), kinfo.integral_type))
 
     @as_pyop2_parloop_arg.register(tsfc_utils.LocalTensorKernelArg)
     def _(tsfc_arg):
@@ -793,16 +796,31 @@ def _do_parloop(wrapper_kernel, form, kinfo, tensor, all_integer_subdomain_ids):
         if tsfc_arg.rank == 0:
             return op2.GlobalParloopArg(tensor)
         elif tsfc_arg.rank == 1:
-            # TODO TSFC should deal with this
-            return op2.DatParloopArg(tensor.dat, _get_map(tensor, kinfo.integral_type))
+            i, = indices
+            if i is None:
+                return op2.DatParloopArg(
+                    tensor.dat, _get_map(tensor.function_space(), kinfo.integral_type)
+                )
+            else:
+                return op2.DatParloopArg(
+                    tensor.dat[i], 
+                    _get_map(tensor.function_space()[i], kinfo.integral_type)
+                )
         elif tsfc_arg.rank == 2:
-            breakpoint()
+            raise NotImplementedError
         else:
             raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
 
 
     # Icky generator so we can access the correct coefficients in order
-    coeffs = (c_ for n in kinfo.coefficient_map for c_ in form.coefficients()[n].split())
+    def coeffs():
+        for n, split_map in kinfo.coefficient_map:
+            c = form.coefficients()[n]
+            split_c = c.split()
+            for c_ in (split_c[i] for i in split_map):
+                yield c_
+    coeffs_iterator = iter(coeffs())
+
 
     mesh = form.ufl_domains()[kinfo.domain_number]
 
@@ -873,24 +891,25 @@ def _(tsfc_arg):
         dim = tuple(dim) if dim else (1,)
         return op2.DatWrapperKernelArg(dim, arity)
     elif tsfc_arg.rank == 2:
-        breakpoint()
         raise NotImplementedError
     else:
         raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
 
 
-def _get_map(func, integral_type):
+def _get_map(func_space, integral_type):
     """TODO"""
+    assert isinstance(func_space, ufl.FunctionSpace)
+
     if integral_type in (
         "cell",
         "exterior_facet_top",
         "exterior_facet_bottom",
         "interior_facet_horiz"
     ):
-        return func.cell_node_map()
+        return func_space.cell_node_map()
     elif integral_type in ("exterior_facet", "exterior_facet_vert"):
-        return func.exterior_facet_node_map()
+        return func_space.exterior_facet_node_map()
     elif integral_type in ("interior_facet", "interior_facet_vert"):
-        return func.interior_facet_node_map()
+        return func_space.interior_facet_node_map()
     else:
         raise AssertionError(f"Unknown integral type '{integral_type}'")
