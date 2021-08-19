@@ -163,7 +163,7 @@ def assemble_form(expr, tensor, bcs, diagonal, assembly_type,
     assembly_rank = _get_assembly_rank(expr, diagonal)
     if assembly_rank == _AssemblyRank.SCALAR:
         if tensor:
-            raise ValueError("Can't assemble 0-form into existing tensor")
+            raise ValueError("Cannot assemble 0-form into existing tensor")
         return _assemble_scalar(expr, bcs, opts)
     elif assembly_rank == _AssemblyRank.VECTOR:
         return _assemble_vector(expr, tensor, bcs, opts)
@@ -237,6 +237,7 @@ def _get_assembly_rank(expr, diagonal):
 
     :returns: The appropriate :class:`_AssemblyRank` (e.g. ``_AssemblyRank.VECTOR``).
     """
+    # TODO TSFC should be able to tell us this for free from the LocalTensorKernelArg
     rank = len(expr.arguments())
     if diagonal:
         assert rank == 2
@@ -262,9 +263,6 @@ def _assemble_scalar(expr, bcs, opts):
     This function does the scalar-specific initialisation of the output tensor
     before calling the generic function :func:`_assemble_expr`.
     """
-    if len(expr.arguments()) != 0:
-        raise ValueError("Can't assemble a 0-form with arguments")
-
     scalar = _make_scalar()
     _assemble_expr(expr, scalar, bcs, opts, _AssemblyRank.SCALAR)
     return scalar.data[0]
@@ -722,12 +720,6 @@ def _make_wrapper_kernels(expr, tensor, bcs, diagonal, fc_params, assembly_rank)
         # else:
         #     raise ValueError(f"Assembly rank '{assembly_rank}' not recognised")
 
-        # for n in coeff_map:
-        #     c = coefficients[n]
-        #     for c_ in c.split():
-        #         m_ = get_map(c_)
-        #         args.append(c_.dat(op2.READ, m_))
-
         if needs_cell_facets:
             raise NotImplementedError("Need to fix in Slate")
             assert integral_type == "cell"
@@ -773,7 +765,7 @@ def _do_parloop(wrapper_kernel, form, kinfo, tensor, all_integer_subdomain_ids):
 
     @as_pyop2_parloop_arg.register(tsfc_utils.CellOrientationsKernelArg)
     def _(tsfc_arg):
-        # TODO Make cell_orientations a property
+        # TODO Make cell_orientations a property for tidiness
         func = mesh.cell_orientations()
         return op2.DatParloopArg(func.dat, _get_map(func, kinfo.integral_type))
 
@@ -797,14 +789,16 @@ def _do_parloop(wrapper_kernel, form, kinfo, tensor, all_integer_subdomain_ids):
 
     @as_pyop2_parloop_arg.register(tsfc_utils.LocalTensorKernelArg)
     def _(tsfc_arg):
-        # For now assume rank = 1 and tensor is None
-        if tensor is None:
-            test, = form.arguments()
-            vec = _make_vector(test)
+        # TODO New types for Scalar/Vector/Matrix
+        if tsfc_arg.rank == 0:
+            return op2.GlobalParloopArg(tensor)
+        elif tsfc_arg.rank == 1:
+            # TODO TSFC should deal with this
+            return op2.DatParloopArg(tensor.dat, _get_map(tensor, kinfo.integral_type))
+        elif tsfc_arg.rank == 2:
+            breakpoint()
         else:
-            vec = tensor
-
-        return op2.DatParloopArg(tensor.dat, _get_map(tensor, kinfo.integral_type))
+            raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
 
 
     # Icky generator so we can access the correct coefficients in order
@@ -872,10 +866,17 @@ def _(tsfc_arg):
 def _(tsfc_arg):
     # Need to check rank and determine appropriate WrapperKernelArg to return. Should
     # this be done inside of TSFC?
-    # To start with assume rank = 1
-    arity, *dim = tsfc_arg.shape[0]
-    dim = tuple(dim) if dim else (1,)
-    return op2.DatWrapperKernelArg(dim, arity)
+    if tsfc_arg.rank == 0:
+        return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
+    elif tsfc_arg.rank == 1:
+        arity, *dim = tsfc_arg.shape[0]
+        dim = tuple(dim) if dim else (1,)
+        return op2.DatWrapperKernelArg(dim, arity)
+    elif tsfc_arg.rank == 2:
+        breakpoint()
+        raise NotImplementedError
+    else:
+        raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
 
 
 def _get_map(func, integral_type):
