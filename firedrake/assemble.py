@@ -792,7 +792,7 @@ def _do_parloop(wrapper_kernel, form, kinfo, tensor, all_integer_subdomain_ids):
 
     @as_pyop2_parloop_arg.register(tsfc_utils.CoefficientKernelArg)
     def _(tsfc_arg):
-        coeff = next(coeffs_iterator)
+        coeff = next(coeffs)
         return op2.DatParloopArg(coeff.dat, _get_map(coeff, kinfo.integral_type))
 
     @as_pyop2_parloop_arg.register(tsfc_utils.LocalTensorKernelArg)
@@ -807,19 +807,8 @@ def _do_parloop(wrapper_kernel, form, kinfo, tensor, all_integer_subdomain_ids):
         return op2.DatParloopArg(tensor.dat, _get_map(tensor, kinfo.integral_type))
 
 
-    def coeffs():
-        """Icky generator function so we can access the correct coefficients.
-
-        This would ideally get replaced by attaching more info to the
-        CoefficientKernelArgs.
-        """
-        for n in kinfo.coefficient_map:
-            c = form.coefficients()[n]
-            for c_ in c.split():
-                yield c_
-
-    coeffs_iterator = iter(coeffs())
-
+    # Icky generator so we can access the correct coefficients in order
+    coeffs = (c_ for n in kinfo.coefficient_map for c_ in form.coefficients()[n].split())
 
     mesh = form.ufl_domains()[kinfo.domain_number]
 
