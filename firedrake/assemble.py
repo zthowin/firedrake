@@ -439,23 +439,42 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
     :arg opts: :class:`_AssemblyOpts` containing the assembly options.
     :arg assembly_rank: The appropriate :class:`_AssemblyRank`.
     """
-    # TODO Cache the parloops properly
-    # TODO Split form compilation into separate function here
-    outputs = _make_wrapper_kernels(expr, tensor, bcs, opts.diagonal, opts.fc_params, assembly_rank)
+    # TODO Cache things properly
+    expr_kernels = _compile_expr(expr, opts.fc_params, opts.diagonal)
 
-    # TODO Put somewhere better
-    # These will be used to correctly interpret the "otherwise"
-    # subdomain
+    # These will be used to correctly interpret the "otherwise" subdomain
     all_integer_subdomain_ids = defaultdict(list)
-    for _, kinfo, _ in outputs:
+    for _, kinfo in expr_kernels:
         if kinfo.subdomain_id != "otherwise":
             all_integer_subdomain_ids[kinfo.integral_type].append(kinfo.subdomain_id)
     for k, v in all_integer_subdomain_ids.items():
         all_integer_subdomain_ids[kinfo] = tuple(sorted(v))
 
-    for indices, kinfo, wrapper_kernel in outputs:
-        _do_parloop(wrapper_kernel, expr, indices, kinfo, tensor, all_integer_subdomain_ids)
+    for indices, kinfo in expr_kernels:
+        if assembly_rank == _AssemblyRank.MATRIX:
+            test, trial = expr.arguments()
+            Vrow = test.function_space()
+            Vcol = trial.function_space()
+            row, col = indices
+            if row is None and col is None:
+                lgmaps, unroll = zip(*(_collect_lgmaps(tensor, bcs, Vrow, Vcol, i, j)
+                                       for i, j in numpy.ndindex(tensor.block_shape)))
+                lgmaps = tuple(lgmaps)
+                unroll = any(unroll)
+            else:
+                assert row is not None and col is not None
+                lgmaps, unroll = _collect_lgmaps(tensor, bcs, Vrow, Vcol, row, col)
+                lgmaps = (lgmaps,)
+            wrapper_kernel = _make_wrapper_kernel(kinfo, unroll)
+            _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids)
+        else:
+            wrapper_kernel = _make_wrapper_kernel(kinfo)
+            _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids)
 
+    _apply_bcs(bcs, tensor, opts, assembly_rank)
+
+
+def _apply_bcs(bcs, tensor, opts, assembly_rank):
     dir_bcs = tuple(bc for bc in bcs if isinstance(bc, DirichletBC))
     _apply_dirichlet_bcs(tensor, dir_bcs, opts, assembly_rank)
 
@@ -529,61 +548,6 @@ def _collect_lgmaps(matrix, all_bcs, Vrow, Vcol, row, col):
     return (rlgmap, clgmap), unroll
 
 
-def _vector_arg(access, get_map, i, *, function, V):
-    """Obtain an :class:`~pyop2.op2.Arg` for insertion into a given
-    vector (:class:`Function`).
-
-    :arg access: :mod:`~pyop2` access descriptor (e.g. :class:`~pyop2.op2.READ`).
-    :arg get_map: Callable of one argument that obtains :class:`~pyop2.op2.Map`
-        objects from :class:`FunctionSpace` objects.
-    :arg i: Index of block (subspace of a mixed function), may be ``None``.
-    :arg function: :class:`Function` to insert into.
-    :arg V: :class:`FunctionSpace` corresponding to ``function``.
-
-    :returns: An :class:`~pyop2.op2.Arg`.
-    """
-    if i is None:
-        map_ = get_map(V)
-        return function.dat(access, map_)
-    else:
-        map_ = get_map(V[i])
-        return function.dat[i](access, map_)
-
-
-def _matrix_arg(access, get_map, row, col, *,
-                all_bcs, matrix, Vrow, Vcol):
-    """Obtain an op2.Arg for insertion into the given matrix.
-
-    :arg access: Access descriptor.
-    :arg get_map: callable of one argument that obtains Maps from
-        functionspaces.
-    :arg row, col: row (column) of block matrix we are assembling (may be None for
-        direct insertion into mixed matrices). Either both or neither
-        must be None.
-    :arg all_bcs: tuple of boundary conditions involved in assembly.
-    :arg matrix: the matrix to obtain the argument for.
-    :arg Vrow, Vcol: function spaces for the row and column space.
-    :raises AssertionError: on invalid arguments
-    :returns: an op2.Arg.
-    """
-    if row is None and col is None:
-        maprow = get_map(Vrow)
-        mapcol = get_map(Vcol)
-        lgmaps, unroll = zip(*(_collect_lgmaps(matrix, all_bcs,
-                                               Vrow, Vcol, i, j)
-                               for i, j in numpy.ndindex(matrix.block_shape)))
-        return matrix.M(access, (maprow, mapcol), lgmaps=tuple(lgmaps),
-                        unroll_map=any(unroll))
-    else:
-        assert row is not None and col is not None
-        maprow = get_map(Vrow[row])
-        mapcol = get_map(Vcol[col])
-        lgmaps, unroll = _collect_lgmaps(matrix, all_bcs,
-                                         Vrow, Vcol, row, col)
-        return matrix.M[row, col](access, (maprow, mapcol), lgmaps=(lgmaps, ),
-                                  unroll_map=unroll)
-
-
 def _apply_dirichlet_bcs(tensor, bcs, opts, assembly_rank):
     """Apply Dirichlet boundary conditions to a tensor.
 
@@ -637,24 +601,9 @@ def _apply_dirichlet_bcs(tensor, bcs, opts, assembly_rank):
         raise AssertionError
 
 
-def _make_wrapper_kernels(expr, tensor, bcs, diagonal, fc_params, assembly_rank):
-    """Create parloops for the assembly of the expression.
-
-    :arg expr: The expression to be assembled.
-    :arg tensor: The tensor to write to. Depending on ``expr`` and ``diagonal``
-        this will either be a scalar (:class:`~pyop2.op2.Global`),
-        vector/cofunction (masquerading as a :class:`.Function`) or :class:`.Matrix`.
-    :arg bcs: Iterable of boundary conditions.
-    :arg diagonal: (:class:`bool`) If assembling a matrix is it diagonal?
-    :arg fc_params: Dictionary of parameters to pass to the form compiler.
-    :arg assembly_rank: The appropriate :class:`_AssemblyRank`.
-
-    :returns: A tuple of the generated :class:`~pyop2..op2.ParLoop` objects.
-    """
-    if fc_params:
-        form_compiler_parameters = fc_params.copy()
-    else:
-        form_compiler_parameters = {}
+def _compile_expr(expr, fc_params=None, diagonal=False):
+    """TODO"""
+    fc_params = fc_params.copy() if fc_params else {}
 
     try:
         topology, = set(d.topology for d in expr.ufl_domains())
@@ -676,79 +625,42 @@ def _make_wrapper_kernels(expr, tensor, bcs, diagonal, fc_params, assembly_rank)
     if isinstance(expr, slate.TensorBase):
         if diagonal:
             raise NotImplementedError("Diagonal + slate not supported")
-        local_kernels = slac.compile_expression(expr, tsfc_parameters=form_compiler_parameters)
+        return slac.compile_expression(expr, tsfc_parameters=fc_params)
     else:
-        local_kernels = tsfc_interface.compile_form(
-            expr, "form", parameters=form_compiler_parameters, diagonal=diagonal
+        return tsfc_interface.compile_form(
+            expr, "form", parameters=fc_params, diagonal=diagonal
         )
 
-    outputs = []
-    for indices, kinfo in local_kernels:
-        local_kernel = kinfo.kernel  # TODO Is this rename valid?
-        integral_type = kinfo.integral_type
-        domain_number = kinfo.domain_number
-        subdomain_id = kinfo.subdomain_id
-        coeff_map = kinfo.coefficient_map
-        pass_layer_arg = kinfo.pass_layer_arg
-        needs_orientations = kinfo.oriented
-        needs_cell_facets = kinfo.needs_cell_facets
-        needs_cell_sizes = kinfo.needs_cell_sizes
 
-        # TODO Need to handle arguments and coefficients properly - investigate
-        # # Output argument
-        # if assembly_rank == _AssemblyRank.MATRIX:
-        #     test, trial = expr.arguments()
-        #     tensor_arg = _matrix_arg(
-        #         op2.INC,
-        #         get_map,
-        #         i,
-        #         j,
-        #         all_bcs=tuple(chain(*bcs)),
-        #         matrix=tensor,
-        #         Vrow=test.function_space(),
-        #         Vcol=trial.function_space()
-        #     )
-        # elif assembly_rank == _AssemblyRank.VECTOR:
-        #     if diagonal:
-        #         # actually a 2-form but throw away the trial space
-        #         test, _ = expr.arguments()
-        #     else:
-        #         test, = expr.arguments()
-        #     tensor_arg = _vector_arg(op2.INC, get_map, i, function=tensor, V=test.function_space())
-        # elif assembly_rank == _AssemblyRank.SCALAR:
-        #     tensor_arg = tensor(op2.INC)
-        # else:
-        #     raise ValueError(f"Assembly rank '{assembly_rank}' not recognised")
+def _make_wrapper_kernel(kinfo, unroll=False):
+    """Create parloops for the assembly of the expression.
 
-        if needs_cell_facets:
-            raise NotImplementedError("Need to fix in Slate")
-            assert integral_type == "cell"
-            extra_args.append(m.cell_to_facets(op2.READ))
+    :arg expr: The expression to be assembled.
+    :arg tensor: The tensor to write to. Depending on ``expr`` and ``diagonal``
+        this will either be a scalar (:class:`~pyop2.op2.Global`),
+        vector/cofunction (masquerading as a :class:`.Function`) or :class:`.Matrix`.
+    :arg bcs: Iterable of boundary conditions.
+    :arg diagonal: (:class:`bool`) If assembling a matrix is it diagonal?
+    :arg fc_params: Dictionary of parameters to pass to the form compiler.
+    :arg assembly_rank: The appropriate :class:`_AssemblyRank`.
 
-        if pass_layer_arg:
-            raise NotImplementedError("Need to fix in Slate")
-            c = op2.Global(1, itspace.layers-2, dtype=numpy.dtype(numpy.int32))
-            o = c(op2.READ)
-            extra_args.append(o)
+    :returns: A tuple of the generated :class:`~pyop2..op2.ParLoop` objects.
+    """
+    iteration_region = {
+        "exterior_facet_top": op2.ON_TOP,
+        "exterior_facet_bottom": op2.ON_BOTTOM,
+        "interior_facet_horiz": op2.ON_INTERIOR_FACETS
+    }.get(kinfo.integral_type, None)
 
-        iteration_region = {
-            "exterior_facet_top": op2.ON_TOP,
-            "exterior_facet_bottom": op2.ON_BOTTOM,
-            "interior_facet_horiz": op2.ON_INTERIOR_FACETS
-        }.get(kinfo.integral_type, None)
-
-        wrapper_kernel = op2.WrapperKernel(
-            local_kernel,
-            [as_pyop2_wrapper_kernel_arg(arg) for arg in kinfo.tsfc_kernel_args],
-            iteration_region=iteration_region,
-            pass_layer_arg=pass_layer_arg
-        )
-
-        outputs.append((indices, kinfo, wrapper_kernel))
-    return outputs
+    return op2.WrapperKernel(
+        kinfo.kernel,
+        [as_pyop2_wrapper_kernel_arg(arg) for arg in kinfo.tsfc_kernel_args],
+        iteration_region=iteration_region,
+        pass_layer_arg=kinfo.pass_layer_arg
+    )
 
 
-def _do_parloop(wrapper_kernel, form, indices, kinfo, tensor, all_integer_subdomain_ids):
+def _do_parloop(wrapper_kernel, indices, kinfo, form, tensor, all_integer_subdomain_ids, lgmaps=None):
     """TODO"""
 
     @functools.singledispatch
@@ -813,7 +725,17 @@ def _do_parloop(wrapper_kernel, form, indices, kinfo, tensor, all_integer_subdom
                     _get_map(tensor.function_space()[i], kinfo.integral_type)
                 )
         elif tsfc_arg.rank == 2:
-            raise NotImplementedError
+            i, j = indices
+            test, trial = tensor.a.arguments()
+            if i is None and j is None:
+                rmap = _get_map(test.function_space(), kinfo.integral_type)
+                cmap = _get_map(trial.function_space(), kinfo.integral_type)
+                return op2.MatParloopArg(tensor.M, (rmap, cmap), lgmaps=lgmaps)
+            else:
+                assert i is not None and j is not None
+                rmap = _get_map(test.function_space()[i], kinfo.integral_type)
+                cmap = _get_map(trial.function_space()[j], kinfo.integral_type)
+                return op2.MatParloopArg(tensor.M[i, j], (rmap, cmap), lgmaps=lgmaps)
         else:
             raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
 
@@ -828,6 +750,17 @@ def _do_parloop(wrapper_kernel, form, indices, kinfo, tensor, all_integer_subdom
     coeffs_iterator = iter(coeffs())
 
 
+    if kinfo.needs_cell_facets:
+        raise NotImplementedError("Need to fix in Slate")
+        assert integral_type == "cell"
+        extra_args.append(m.cell_to_facets(op2.READ))
+
+    if kinfo.pass_layer_arg:
+        raise NotImplementedError("Need to fix in Slate")
+        c = op2.Global(1, itspace.layers-2, dtype=numpy.dtype(numpy.int32))
+        o = c(op2.READ)
+        extra_args.append(o)
+
     mesh = form.ufl_domains()[kinfo.domain_number]
 
     subdomain_data = form.subdomain_data()[mesh].get(kinfo.integral_type, None)
@@ -840,15 +773,6 @@ def _do_parloop(wrapper_kernel, form, indices, kinfo, tensor, all_integer_subdom
     else:
         iterset = mesh.measure_set(kinfo.integral_type, kinfo.subdomain_id,
                                    all_integer_subdomain_ids)
-
-    # TODO I don't think I need to know assembly_rank at all
-    # Find argument space indices
-    # if assembly_rank == _AssemblyRank.MATRIX:
-    #     i, j = indices
-    # elif assembly_rank == _AssemblyRank.VECTOR:
-    #     i, = indices
-    # else:
-    #     assert len(indices) == 0
 
     try:
         op2.parloop(
@@ -894,11 +818,18 @@ def _(tsfc_arg):
     if tsfc_arg.rank == 0:
         return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
     elif tsfc_arg.rank == 1:
-        arity, *dim = tsfc_arg.shape[0]
+        shape, = tsfc_arg.shape
+        arity, *dim = shape
         dim = tuple(dim) if dim else (1,)
         return op2.DatWrapperKernelArg(dim, arity)
     elif tsfc_arg.rank == 2:
-        raise NotImplementedError
+        rshape, cshape = tsfc_arg.shape
+        rarity, *rdim = rshape
+        rdim = tuple(rdim) if rdim else (1,)
+        carity, *cdim = cshape
+        cdim = tuple(cdim) if cdim else (1,)
+        dims = (rdim + cdim)
+        return op2.MatWrapperKernelArg(((dims,),), (rarity, carity))
     else:
         raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
 
