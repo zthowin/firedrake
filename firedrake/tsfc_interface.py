@@ -295,3 +295,100 @@ def as_pyop2_local_kernel(tsfc_kernel, opts):
         opts=opts,
         requires_zeroed_output_arguments=True
     )
+
+
+class WrapperKernelBuilder:
+    """A helper class for building :class:`pyop2.WrapperKernel` objects."""
+
+    def __init__(self, local_kernel, *, unroll=None):
+        """Create a :class:`WrapperKernelBuilder` object.
+
+        :arg local_kernel:
+            A :class:`KernelInfo` object resulting from the compilation of a form.
+        :kwarg unroll:
+            :class:`bool` indicating whether or not the maps for accessing the output
+            tensor address DoFs (``True``) or nodes (``False``). Value is ``None`` if
+            kernel does not output a matrix.
+        """
+        self._local_kernel = local_kernel
+        self._unroll = unroll
+
+    def build(self):
+        """Build the wrapper kernel.
+
+        :returns:
+            A :class:`pyop2.WrapperKernel`.
+        """
+        wrapper_kernel_args = [
+            self._as_pyop2_arg(arg) for arg in self._local_kernel.tsfc_kernel_args
+        ]
+
+        iteration_region = {
+            "exterior_facet_top": op2.ON_TOP,
+            "exterior_facet_bottom": op2.ON_BOTTOM,
+            "interior_facet_horiz": op2.ON_INTERIOR_FACETS
+        }.get(self._local_kernel.integral_type, None)
+
+        return op2.WrapperKernel(
+            self._local_kernel.kernel,
+            wrapper_kernel_args,
+            iteration_region=iteration_region,
+            pass_layer_arg=self._local_kernel.pass_layer_arg
+        )
+
+    def _as_pyop2_arg(self, local_kernel_arg):
+        """Convert a local kernel argument type to a :class:`pyop2.WrapperKernelArg`.
+
+        :arg local_kernel_arg:
+            A :class:`tsfc.KernelArg` object from the local kernel.
+
+        :returns:
+            The corresponding :class:`pyop2.WrapperKernelArg`.
+        """
+        # TODO Once the minimum supported Python version is 3.8 this method should be
+        # converted to a functools.singledispatchmethod.
+        if type(local_kernel_arg) in (tsfc_utils.ConstantKernelArg,
+                                      tsfc_utils.ExteriorFacetKernelArg,
+                                      tsfc_utils.InteriorFacetKernelArg):
+            return op2.GlobalWrapperKernelArg(local_kernel_arg.shape)
+
+        elif type(local_kernel_arg) in (tsfc_utils.CoefficientKernelArg,
+                                        tsfc_utils.CoordinatesKernelArg,
+                                        tsfc_utils.CellOrientationsKernelArg,
+                                        tsfc_utils.CellSizesKernelArg):
+            arity, *dim = local_kernel_arg.shape
+            dim = tuple(dim) if dim else (1,)
+            return op2.DatWrapperKernelArg(dim, arity)
+
+        elif type(local_kernel_arg) == tsfc_utils.LocalTensorKernelArg:
+            if local_kernel_arg.rank == 0:
+                assert self._unroll is None
+                return op2.GlobalWrapperKernelArg(local_kernel_arg.shape)
+            elif local_kernel_arg.rank == 1:
+                assert self._unroll is None
+                shape, = local_kernel_arg.shape
+                arity, *dim = shape
+                dim = tuple(dim) if dim else (1,)
+                return op2.DatWrapperKernelArg(dim, arity)
+            elif local_kernel_arg.rank == 2:
+                rshape, cshape = local_kernel_arg.shape
+                rarity, *rdim = rshape
+                rdim = tuple(rdim) if rdim else (1,)
+                carity, *cdim = cshape
+                cdim = tuple(cdim) if cdim else (1,)
+                dims = (rdim + cdim)
+                return op2.MatWrapperKernelArg(((dims,),), (rarity, carity), unroll=self._unroll)
+            else:
+                raise AssertionError
+
+        else:
+            raise NotImplementedError(f"Argument type {type(local_kernel_arg)} is not "
+                                       "recognised")
+
+
+def make_wrapper_kernel(local_kernel, *, unroll=None):
+    """Construct a :class:`pyop2.WrapperKernel` from a local kernel.
+
+    See :class:`WrapperKernelBuilder` for a description of the available arguments.
+    """
+    return WrapperKernelBuilder(local_kernel, unroll=unroll).build()

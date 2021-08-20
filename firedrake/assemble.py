@@ -465,10 +465,10 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
                 assert row is not None and col is not None
                 lgmaps, unroll = _collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, row, col)
                 lgmaps = (lgmaps,)
-            wrapper_kernel = _make_wrapper_kernel(kinfo, unroll)
+            wrapper_kernel = tsfc_interface.make_wrapper_kernel(kinfo, unroll=unroll)
             _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids, lgmaps=lgmaps)
         else:
-            wrapper_kernel = _make_wrapper_kernel(kinfo)
+            wrapper_kernel = tsfc_interface.make_wrapper_kernel(kinfo)
             _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids)
 
     _apply_bcs(bcs, tensor, opts, assembly_rank)
@@ -630,84 +630,6 @@ def _compile_expr(expr, fc_params=None, diagonal=False):
         return tsfc_interface.compile_form(
             expr, "form", parameters=fc_params, diagonal=diagonal
         )
-
-
-def _make_wrapper_kernel(kinfo, unroll=False):
-    """Create parloops for the assembly of the expression.
-
-    :arg expr: The expression to be assembled.
-    :arg tensor: The tensor to write to. Depending on ``expr`` and ``diagonal``
-        this will either be a scalar (:class:`~pyop2.op2.Global`),
-        vector/cofunction (masquerading as a :class:`.Function`) or :class:`.Matrix`.
-    :arg bcs: Iterable of boundary conditions.
-    :arg diagonal: (:class:`bool`) If assembling a matrix is it diagonal?
-    :arg fc_params: Dictionary of parameters to pass to the form compiler.
-    :arg assembly_rank: The appropriate :class:`_AssemblyRank`.
-
-    :returns: A tuple of the generated :class:`~pyop2..op2.ParLoop` objects.
-    """
-
-    @functools.singledispatch
-    def as_pyop2_wrapper_kernel_arg(kernel_arg):
-        """Convert a :class:`tsfc.KernelArg` to a corresponding
-        :class:`pyop2.WrapperKernelArg`.
-        """
-        raise NotImplementedError
-
-
-    @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoefficientKernelArg)
-    @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoordinatesKernelArg)
-    @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
-    @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellSizesKernelArg)
-    def _(tsfc_arg):
-        arity, *dim = tsfc_arg.shape
-        dim = tuple(dim) if dim else (1,)
-        return op2.DatWrapperKernelArg(dim, arity)
-
-
-    @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.ConstantKernelArg)
-    @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.ExteriorFacetKernelArg)
-    @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.InteriorFacetKernelArg)
-    def _(tsfc_arg):
-        dim = tsfc_arg.shape
-        return op2.GlobalWrapperKernelArg(dim)
-
-
-    @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalTensorKernelArg)
-    def _(tsfc_arg):
-        # Need to check rank and determine appropriate WrapperKernelArg to return. Should
-        # this be done inside of TSFC?
-        if tsfc_arg.rank == 0:
-            return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
-        elif tsfc_arg.rank == 1:
-            shape, = tsfc_arg.shape
-            arity, *dim = shape
-            dim = tuple(dim) if dim else (1,)
-            return op2.DatWrapperKernelArg(dim, arity)
-        elif tsfc_arg.rank == 2:
-            rshape, cshape = tsfc_arg.shape
-            rarity, *rdim = rshape
-            rdim = tuple(rdim) if rdim else (1,)
-            carity, *cdim = cshape
-            cdim = tuple(cdim) if cdim else (1,)
-            dims = (rdim + cdim)
-            return op2.MatWrapperKernelArg(((dims,),), (rarity, carity), unroll=unroll)
-        else:
-            raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
-
-
-    iteration_region = {
-        "exterior_facet_top": op2.ON_TOP,
-        "exterior_facet_bottom": op2.ON_BOTTOM,
-        "interior_facet_horiz": op2.ON_INTERIOR_FACETS
-    }.get(kinfo.integral_type, None)
-
-    return op2.WrapperKernel(
-        kinfo.kernel,
-        [as_pyop2_wrapper_kernel_arg(arg) for arg in kinfo.tsfc_kernel_args],
-        iteration_region=iteration_region,
-        pass_layer_arg=kinfo.pass_layer_arg,
-    )
 
 
 def _do_parloop(wrapper_kernel, indices, kinfo, form, tensor, all_integer_subdomain_ids, lgmaps=None):
