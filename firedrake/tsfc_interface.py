@@ -39,6 +39,7 @@ tsfc_default_parameters["scalar_type_c"] = utils.ScalarType_c
 
 KernelInfo = collections.namedtuple("KernelInfo",
                                     ["kernel",
+                                     "orig_kernel",
                                      "integral_type",
                                      "oriented",
                                      "subdomain_id",
@@ -135,7 +136,8 @@ class TSFCKernel(Cached):
             ast = kernel.ast
             # Unwind coefficient numbering
             numbers = tuple(number_map[c] for c in kernel.coefficient_numbers)
-            kernels.append(KernelInfo(kernel=as_pyop2_local_kernel(kernel, opts),
+            kernels.append(KernelInfo(kernel=as_pyop2_local_kernel(kernel, opts=opts),
+                                      orig_kernel=kernel,
                                       integral_type=kernel.integral_type,
                                       oriented=kernel.oriented,
                                       subdomain_id=kernel.subdomain_id,
@@ -267,16 +269,11 @@ def _ensure_cachedir(comm=None):
         makedirs(TSFCKernel._cachedir, exist_ok=True)
 
 
-def as_pyop2_local_kernel(tsfc_kernel, opts):
+def as_pyop2_local_kernel(tsfc_kernel, access=op2.INC, *, opts={}):
     """TODO"""
-    def get_access(intent):
-        return {
-            tsfc_utils.Intent.IN: op2.READ,
-            tsfc_utils.Intent.OUT: op2.INC
-        }.get(intent)
-
+    access_map = {tsfc_utils.Intent.IN: op2.READ, tsfc_utils.Intent.OUT: access}
     kernel_args = [
-        op2.LocalKernelArg(get_access(arg.intent), arg.dtype)
+        op2.LocalKernelArg(access_map[arg.intent], arg.dtype)
         for arg in tsfc_kernel.arguments
     ]
     return op2.Kernel(
@@ -291,17 +288,24 @@ def as_pyop2_local_kernel(tsfc_kernel, opts):
 class WrapperKernelBuilder:
     """A helper class for building :class:`pyop2.WrapperKernel` objects."""
 
-    def __init__(self, local_kernel, *, unroll=None):
+    # TODO Create parent class for both ExpressionKernel and Kernel such that this
+    # class accepts an interface.
+    def __init__(self, local_kernel, *, access=op2.INC, unroll=None):
         """Create a :class:`WrapperKernelBuilder` object.
 
         :arg local_kernel:
-            A :class:`KernelInfo` object resulting from the compilation of a form.
+            A TSFC kernel object (either :class:`tsfc.Kernel` or
+            :class:`tsfc.ExpressionKernel`).
+        :kwarg access:
+            OP2 access descriptor (:class:`pyop2.Access`) for the output argument of the
+            kernel.
         :kwarg unroll:
             :class:`bool` indicating whether or not the maps for accessing the output
             tensor address DoFs (``True``) or nodes (``False``). Value is ``None`` if
             kernel does not output a matrix.
         """
         self._local_kernel = local_kernel
+        self._access = access
         self._unroll = unroll
 
     def build(self):
@@ -311,20 +315,25 @@ class WrapperKernelBuilder:
             A :class:`pyop2.WrapperKernel`.
         """
         wrapper_kernel_args = [
-            self._as_pyop2_arg(arg) for arg in self._local_kernel.tsfc_kernel_args
+            self._as_pyop2_arg(arg) for arg in self._local_kernel.arguments
         ]
 
-        iteration_region = {
-            "exterior_facet_top": op2.ON_TOP,
-            "exterior_facet_bottom": op2.ON_BOTTOM,
-            "interior_facet_horiz": op2.ON_INTERIOR_FACETS
-        }.get(self._local_kernel.integral_type, None)
+        try:
+            iteration_region = {
+                "exterior_facet_top": op2.ON_TOP,
+                "exterior_facet_bottom": op2.ON_BOTTOM,
+                "interior_facet_horiz": op2.ON_INTERIOR_FACETS
+            }.get(self._local_kernel.integral_type, None)
+        except AttributeError:
+            # ExpressionKernel does not define integral_type
+            assert type(self._local_kernel) == tsfc_utils.ExpressionKernel
+            iteration_region = None
 
         return op2.WrapperKernel(
-            self._local_kernel.kernel,
+            as_pyop2_local_kernel(self._local_kernel, self._access),
             wrapper_kernel_args,
             iteration_region=iteration_region,
-            pass_layer_arg=self._local_kernel.pass_layer_arg
+            pass_layer_arg=False
         )
 
     def _as_pyop2_arg(self, local_kernel_arg):

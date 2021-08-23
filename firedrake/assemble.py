@@ -465,16 +465,17 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
                 assert row is not None and col is not None
                 lgmaps, unroll = _collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, row, col)
                 lgmaps = (lgmaps,)
-            wrapper_kernel = tsfc_interface.make_wrapper_kernel(kinfo, unroll=unroll)
+            wrapper_kernel = tsfc_interface.make_wrapper_kernel(kinfo.orig_kernel, unroll=unroll)
             _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids, lgmaps=lgmaps)
         else:
-            wrapper_kernel = tsfc_interface.make_wrapper_kernel(kinfo)
+            wrapper_kernel = tsfc_interface.make_wrapper_kernel(kinfo.orig_kernel)
             _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids)
 
     _apply_bcs(bcs, tensor, opts, assembly_rank)
 
 
 def _apply_bcs(bcs, tensor, opts, assembly_rank):
+    """TODO"""
     dir_bcs = tuple(bc for bc in bcs if isinstance(bc, DirichletBC))
     _apply_dirichlet_bcs(tensor, dir_bcs, opts, assembly_rank)
 
