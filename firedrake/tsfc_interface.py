@@ -106,6 +106,8 @@ class TSFCKernel(Cached):
 
     @classmethod
     def _cache_key(cls, form, name, parameters, number_map, interface, coffee=False, diagonal=False):
+        # TODO Actually fix this properly - for now just disable caching
+        return None
         # FIXME Making the COFFEE parameters part of the cache key causes
         # unnecessary repeated calls to TSFC when actually only the kernel code
         # needs to be regenerated
@@ -290,7 +292,7 @@ class WrapperKernelBuilder:
 
     # TODO Create parent class for both ExpressionKernel and Kernel such that this
     # class accepts an interface.
-    def __init__(self, local_kernel, *, access=op2.INC, unroll=None):
+    def __init__(self, local_kernel, *, access=op2.INC, unroll=None, **kwargs):
         """Create a :class:`WrapperKernelBuilder` object.
 
         :arg local_kernel:
@@ -303,10 +305,13 @@ class WrapperKernelBuilder:
             :class:`bool` indicating whether or not the maps for accessing the output
             tensor address DoFs (``True``) or nodes (``False``). Value is ``None`` if
             kernel does not output a matrix.
+
+        All other kwargs are passed to the WrapperKernel constructor.
         """
         self._local_kernel = local_kernel
         self._access = access
         self._unroll = unroll
+        self._wrapper_kernel_kwargs = kwargs
 
     def build(self):
         """Build the wrapper kernel.
@@ -333,7 +338,8 @@ class WrapperKernelBuilder:
             as_pyop2_local_kernel(self._local_kernel, self._access),
             wrapper_kernel_args,
             iteration_region=iteration_region,
-            pass_layer_arg=False
+            pass_layer_arg=False,
+            **self._wrapper_kernel_kwargs
         )
 
     def _as_pyop2_arg(self, local_kernel_arg):
@@ -386,9 +392,9 @@ class WrapperKernelBuilder:
                                        "recognised")
 
 
-def make_wrapper_kernel(local_kernel, *, unroll=None):
+def make_wrapper_kernel(*args, **kwargs):
     """Construct a :class:`pyop2.WrapperKernel` from a local kernel.
 
     See :class:`WrapperKernelBuilder` for a description of the available arguments.
     """
-    return WrapperKernelBuilder(local_kernel, unroll=unroll).build()
+    return WrapperKernelBuilder(*args, **kwargs).build()

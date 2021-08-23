@@ -450,6 +450,11 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
     for k, v in all_integer_subdomain_ids.items():
         all_integer_subdomain_ids[kinfo] = tuple(sorted(v))
 
+    # kwargs for wrapper kernel
+    extruded = isinstance(cell_set, op2.ExtrudedSet),
+    constant_layers = extruded and cell_set.constant_layers
+    subset = isinstance(cell_set, Subset),
+
     for indices, kinfo in expr_kernels:
         if assembly_rank == _AssemblyRank.MATRIX:
             test, trial = expr.arguments()
@@ -465,10 +470,21 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
                 assert row is not None and col is not None
                 lgmaps, unroll = _collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, row, col)
                 lgmaps = (lgmaps,)
-            wrapper_kernel = tsfc_interface.make_wrapper_kernel(kinfo.orig_kernel, unroll=unroll)
+            wrapper_kernel = tsfc_interface.make_wrapper_kernel(
+                kinfo.orig_kernel,
+                extruded=extruded,
+                constant_layers=constant_layers,
+                subset=subset,
+                unroll=unroll
+            )
             _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids, lgmaps=lgmaps)
         else:
-            wrapper_kernel = tsfc_interface.make_wrapper_kernel(kinfo.orig_kernel)
+            wrapper_kernel = tsfc_interface.make_wrapper_kernel(
+                kinfo.orig_kernel,
+                extruded=extruded,
+                constant_layers=constant_layers,
+                subset=subset,
+            )
             _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids)
 
     _apply_bcs(bcs, tensor, opts, assembly_rank)

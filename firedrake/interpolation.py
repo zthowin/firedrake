@@ -284,6 +284,16 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
     parameters = {}
     parameters['scalar_type'] = utils.ScalarType
 
+    cell_set = target_mesh.cell_set
+    if subset is not None:
+        assert subset.superset == cell_set
+        cell_set = subset
+
+    # kwargs for wrapper kernel
+    extruded = isinstance(cell_set, op2.ExtrudedSet),
+    constant_layers = extruded and cell_set.constant_layers
+    subset = isinstance(cell_set, op2.Subset)
+
     if not isinstance(expr, firedrake.Expression):
         kernel = compile_expression_dual_evaluation(expr, to_element,
                                                     domain=source_mesh,
@@ -295,7 +305,13 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
         coefficients = kernel.coefficients
         first_coeff_fake_coords = kernel.first_coefficient_fake_coords
         name = kernel.name
-        wrapper_kernel = tsfc_interface.WrapperKernelBuilder(kernel, access=access).build()
+        wrapper_kernel = tsfc_interface.make_wrapper_kernel(
+            kernel,
+            access=access,
+            extruded=extruded,
+            constant_layers=constant_layers,
+            subset=subset
+        )
     elif hasattr(expr, "eval"):
         raise NotImplementedError  # TODO
         to_pts = []
@@ -309,10 +325,6 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
     else:
         raise RuntimeError("Attempting to evaluate an Expression which has no value.")
 
-    cell_set = target_mesh.cell_set
-    if subset is not None:
-        assert subset.superset == cell_set
-        cell_set = subset
     parloop_args = []
 
     if first_coeff_fake_coords:
