@@ -287,114 +287,42 @@ def as_pyop2_local_kernel(tsfc_kernel, access=op2.INC, *, opts={}):
     )
 
 
-class WrapperKernelBuilder:
-    """A helper class for building :class:`pyop2.WrapperKernel` objects."""
-
-    # TODO Create parent class for both ExpressionKernel and Kernel such that this
-    # class accepts an interface.
-    def __init__(self, local_kernel, *, access=op2.INC, unroll=None, **kwargs):
-        """Create a :class:`WrapperKernelBuilder` object.
-
-        :arg local_kernel:
-            A TSFC kernel object (either :class:`tsfc.Kernel` or
-            :class:`tsfc.ExpressionKernel`).
-        :kwarg access:
-            OP2 access descriptor (:class:`pyop2.Access`) for the output argument of the
-            kernel.
-        :kwarg unroll:
-            :class:`bool` indicating whether or not the maps for accessing the output
-            tensor address DoFs (``True``) or nodes (``False``). Value is ``None`` if
-            kernel does not output a matrix.
-
-        All other kwargs are passed to the WrapperKernel constructor.
-        """
-        self._local_kernel = local_kernel
-        self._access = access
-        self._unroll = unroll
-        self._wrapper_kernel_kwargs = kwargs
-
-    def build(self):
-        """Build the wrapper kernel.
-
-        :returns:
-            A :class:`pyop2.WrapperKernel`.
-        """
-        wrapper_kernel_args = [
-            self._as_pyop2_arg(arg) for arg in self._local_kernel.arguments
-        ]
-
-        try:
-            iteration_region = {
-                "exterior_facet_top": op2.ON_TOP,
-                "exterior_facet_bottom": op2.ON_BOTTOM,
-                "interior_facet_horiz": op2.ON_INTERIOR_FACETS
-            }.get(self._local_kernel.integral_type, None)
-        except AttributeError:
-            # ExpressionKernel does not define integral_type
-            assert type(self._local_kernel) == tsfc_utils.ExpressionKernel
-            iteration_region = None
-
-        return op2.WrapperKernel(
-            as_pyop2_local_kernel(self._local_kernel, self._access),
-            wrapper_kernel_args,
-            iteration_region=iteration_region,
-            pass_layer_arg=False,
-            **self._wrapper_kernel_kwargs
-        )
-
-    def _as_pyop2_arg(self, local_kernel_arg):
-        """Convert a local kernel argument type to a :class:`pyop2.WrapperKernelArg`.
-
-        :arg local_kernel_arg:
-            A :class:`tsfc.KernelArg` object from the local kernel.
-
-        :returns:
-            The corresponding :class:`pyop2.WrapperKernelArg`.
-        """
-        # TODO Once the minimum supported Python version is 3.8 this method should be
-        # converted to a functools.singledispatchmethod.
-        if type(local_kernel_arg) in (tsfc_utils.ConstantKernelArg,
-                                      tsfc_utils.ExteriorFacetKernelArg,
-                                      tsfc_utils.InteriorFacetKernelArg):
-            return op2.GlobalWrapperKernelArg(local_kernel_arg.shape)
-
-        elif type(local_kernel_arg) in (tsfc_utils.CoefficientKernelArg,
-                                        tsfc_utils.CoordinatesKernelArg,
-                                        tsfc_utils.CellOrientationsKernelArg,
-                                        tsfc_utils.CellSizesKernelArg):
-            arity, *dim = local_kernel_arg.shape
-            dim = tuple(dim) if dim else (1,)
-            return op2.DatWrapperKernelArg(dim, arity)
-
-        elif type(local_kernel_arg) == tsfc_utils.LocalTensorKernelArg:
-            if local_kernel_arg.rank == 0:
-                assert self._unroll is None
-                return op2.GlobalWrapperKernelArg(local_kernel_arg.shape)
-            elif local_kernel_arg.rank == 1:
-                assert self._unroll is None
-                shape, = local_kernel_arg.shape
-                arity, *dim = shape
-                dim = tuple(dim) if dim else (1,)
-                return op2.DatWrapperKernelArg(dim, arity)
-            elif local_kernel_arg.rank == 2:
-                rshape, cshape = local_kernel_arg.shape
-                rarity, *rdim = rshape
-                rdim = tuple(rdim) if rdim else (1,)
-                carity, *cdim = cshape
-                cdim = tuple(cdim) if cdim else (1,)
-                dims = (rdim + cdim)
-                return op2.MatWrapperKernelArg(((dims,),), (rarity, carity), unroll=self._unroll)
-            else:
-                raise AssertionError
-
-        else:
-            raise NotImplementedError(f"Argument type {type(local_kernel_arg)} is not "
-                                       "recognised")
+@functools.singledispatch
+def as_pyop2_wrapper_kernel_arg(tsfc_kernel_arg):
+    raise NotImplementedError
 
 
-def make_wrapper_kernel(*args, **kwargs):
-    """Construct a :class:`pyop2.WrapperKernel` from a local kernel.
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.ConstantKernelArg)
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.ExteriorFacetKernelArg)
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.InteriorFacetKernelArg)
+def _(tsfc_kernel_arg, **kwargs):
+    return op2.GlobalWrapperKernelArg(tsfc_kernel_arg.shape)
 
-    See :class:`WrapperKernelBuilder` for a description of the available arguments.
-    """
-    return WrapperKernelBuilder(*args, **kwargs).build()
+
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoefficientKernelArg)
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoordinatesKernelArg)
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellSizesKernelArg)
+def _(tsfc_kernel_arg, **kwargs):
+    arity, *dim = tsfc_kernel_arg.shape
+    dim = tuple(dim) if dim else (1,)
+    return op2.DatWrapperKernelArg(dim, arity)
+
+
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalTensorKernelArg)
+def _(tsfc_kernel_arg, *, unroll=False):
+    if tsfc_kernel_arg.rank == 0:
+        return op2.GlobalWrapperKernelArg(tsfc_kernel_arg.shape)
+    elif tsfc_kernel_arg.rank == 1:
+        shape, = tsfc_kernel_arg.shape
+        arity, *dim = shape
+        dim = tuple(dim) if dim else (1,)
+        return op2.DatWrapperKernelArg(dim, arity)
+    elif tsfc_kernel_arg.rank == 2:
+        rshape, cshape = tsfc_kernel_arg.shape
+        rarity, *rdim = rshape
+        rdim = tuple(rdim) if rdim else (1,)
+        carity, *cdim = cshape
+        cdim = tuple(cdim) if cdim else (1,)
+        dims = (rdim + cdim)
+        return op2.MatWrapperKernelArg(((dims,),), (rarity, carity), unroll=unroll)

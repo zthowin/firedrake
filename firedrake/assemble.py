@@ -450,12 +450,13 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
     for k, v in all_integer_subdomain_ids.items():
         all_integer_subdomain_ids[kinfo] = tuple(sorted(v))
 
-    # kwargs for wrapper kernel
-    extruded = isinstance(cell_set, op2.ExtrudedSet),
-    constant_layers = extruded and cell_set.constant_layers
-    subset = isinstance(cell_set, Subset),
-
     for indices, kinfo in expr_kernels:
+        iterset = _get_iterset(expr, kinfo, all_integer_subdomain_ids)
+        # kwargs for wrapper kernel
+        extruded = isinstance(iterset, op2.ExtrudedSet)
+        constant_layers = extruded and iterset.constant_layers
+        subset = isinstance(iterset, op2.Subset)
+
         if assembly_rank == _AssemblyRank.MATRIX:
             test, trial = expr.arguments()
             Vrow = test.function_space()
@@ -470,22 +471,29 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
                 assert row is not None and col is not None
                 lgmaps, unroll = _collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, row, col)
                 lgmaps = (lgmaps,)
-            wrapper_kernel = tsfc_interface.make_wrapper_kernel(
-                kinfo.orig_kernel,
-                extruded=extruded,
-                constant_layers=constant_layers,
-                subset=subset,
-                unroll=unroll
-            )
-            _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids, lgmaps=lgmaps)
         else:
-            wrapper_kernel = tsfc_interface.make_wrapper_kernel(
-                kinfo.orig_kernel,
-                extruded=extruded,
-                constant_layers=constant_layers,
-                subset=subset,
-            )
-            _do_parloop(wrapper_kernel, indices, kinfo, expr, tensor, all_integer_subdomain_ids)
+            lgmaps = None
+            unroll=None
+
+        wrapper_kernel_args = [tsfc_interface.as_pyop2_wrapper_kernel_arg(arg, unroll=unroll)
+                               for arg in kinfo.orig_kernel.arguments]
+
+        iteration_region = {
+            "exterior_facet_top": op2.ON_TOP,
+            "exterior_facet_bottom": op2.ON_BOTTOM,
+            "interior_facet_horiz": op2.ON_INTERIOR_FACETS
+        }.get(kinfo.integral_type, None)
+
+        wrapper_kernel = op2.WrapperKernel(
+            kinfo.kernel,
+            wrapper_kernel_args,
+            iteration_region=iteration_region,
+            pass_layer_arg=kinfo.pass_layer_arg,
+            extruded=extruded,
+            constant_layers=constant_layers,
+            subset=subset
+        )
+        _do_parloop(wrapper_kernel, iterset, indices, kinfo, expr, tensor, all_integer_subdomain_ids, lgmaps=lgmaps)
 
     _apply_bcs(bcs, tensor, opts, assembly_rank)
 
@@ -649,7 +657,7 @@ def _compile_expr(expr, fc_params=None, diagonal=False):
         )
 
 
-def _do_parloop(wrapper_kernel, indices, kinfo, form, tensor, all_integer_subdomain_ids, lgmaps=None):
+def _do_parloop(wrapper_kernel, iterset, indices, kinfo, form, tensor, all_integer_subdomain_ids, lgmaps=None):
     """TODO"""
 
     @functools.singledispatch
@@ -738,6 +746,7 @@ def _do_parloop(wrapper_kernel, indices, kinfo, form, tensor, all_integer_subdom
                 yield c_
     coeffs_iterator = iter(coeffs())
 
+    mesh = _get_mesh(form, kinfo)
 
     if kinfo.needs_cell_facets:
         raise NotImplementedError("Need to fix in Slate")
@@ -749,19 +758,6 @@ def _do_parloop(wrapper_kernel, indices, kinfo, form, tensor, all_integer_subdom
         c = op2.Global(1, itspace.layers-2, dtype=numpy.dtype(numpy.int32))
         o = c(op2.READ)
         extra_args.append(o)
-
-    mesh = form.ufl_domains()[kinfo.domain_number]
-
-    subdomain_data = form.subdomain_data()[mesh].get(kinfo.integral_type, None)
-    if subdomain_data is not None:
-        if integral_type != "cell":
-            raise NotImplementedError("subdomain_data only supported with cell integrals")
-        if subdomain_id not in ("otherwise", "everywhere"):
-            raise ValueError("Cannot use subdomain data and subdomain_id")
-        iterset = subdomain_data
-    else:
-        iterset = mesh.measure_set(kinfo.integral_type, kinfo.subdomain_id,
-                                   all_integer_subdomain_ids)
 
     try:
         op2.parloop(
@@ -791,3 +787,21 @@ def _get_map(func_space, integral_type):
         return func_space.interior_facet_node_map()
     else:
         raise AssertionError(f"Unknown integral type '{integral_type}'")
+
+
+def _get_mesh(expr, expr_kernel):
+    return expr.ufl_domains()[expr_kernel.domain_number]
+
+
+def _get_iterset(expr, expr_kernel, all_integer_subdomain_ids):
+    mesh = _get_mesh(expr, expr_kernel)
+    subdomain_data = expr.subdomain_data()[mesh].get(expr_kernel.integral_type, None)
+    if subdomain_data is not None:
+        if expr_kernel.integral_type != "cell":
+            raise NotImplementedError("subdomain_data only supported with cell integrals")
+        if expr_kernel.subdomain_id not in ("otherwise", "everywhere"):
+            raise ValueError("Cannot use subdomain data and subdomain_id")
+        return subdomain_data
+    else:
+        return mesh.measure_set(expr_kernel.integral_type, expr_kernel.subdomain_id,
+                                all_integer_subdomain_ids)

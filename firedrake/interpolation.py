@@ -290,7 +290,7 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
         cell_set = subset
 
     # kwargs for wrapper kernel
-    extruded = isinstance(cell_set, op2.ExtrudedSet),
+    extruded = isinstance(cell_set, op2.ExtrudedSet)
     constant_layers = extruded and cell_set.constant_layers
     subset = isinstance(cell_set, op2.Subset)
 
@@ -305,9 +305,15 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
         coefficients = kernel.coefficients
         first_coeff_fake_coords = kernel.first_coefficient_fake_coords
         name = kernel.name
-        wrapper_kernel = tsfc_interface.make_wrapper_kernel(
-            kernel,
-            access=access,
+
+        wrapper_kernel_args = [
+            tsfc_interface.as_pyop2_wrapper_kernel_arg(arg)
+            for arg in kernel.arguments
+        ]
+        wrapper_kernel = op2.WrapperKernel(
+            tsfc_interface.as_pyop2_local_kernel(kernel, access),
+            wrapper_kernel_args,
+            pass_layer_arg=False,
             extruded=extruded,
             constant_layers=constant_layers,
             subset=subset
@@ -363,10 +369,13 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
         copyin = ()
         copyout = ()
     if isinstance(tensor, op2.Global):
+        assert kernel.arguments[0].rank == 0
         parloop_args.append(op2.GlobalParloopArg(tensor))
     elif isinstance(tensor, op2.Dat):
+        assert kernel.arguments[0].rank == 1
         parloop_args.append(op2.DatParloopArg(tensor, V.cell_node_map()))
     else:
+        assert kernel.arguments[0].rank == 2
         assert access == op2.WRITE  # Other access descriptors not done for Matrices.
         rows_map = V.cell_node_map()
         columns_map = arguments[0].function_space().cell_node_map()
