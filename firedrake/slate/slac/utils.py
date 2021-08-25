@@ -301,7 +301,19 @@ def merge_loopy(slate_loopy, output_arg, builder, var2terminal, name):
         tsfc_kernels = ()
 
     # Construct args
-    args = [output_arg] + builder.generate_wrapper_kernel_args(tensor2temp)
+    args = [output_arg] + builder.generate_wrapper_kernel_args(tensor2temp, tsfc_kernels)
+
+    # kernel_args is a list of all the non-temporary arguments (i.e. those that get
+    # passed in to the kernel).
+    kernel_args = []
+    loopy_args = []
+    for arg in args:
+        if not isinstance(arg, lp.TemporaryVariable):
+            kernel_args.append(arg)
+            loopy_args.append(arg.loopy_arg)
+        else:
+            loopy_args.append(arg)
+
     # Munge instructions
     insns = inits
     insns.extend(tsfc_calls)
@@ -311,8 +323,9 @@ def merge_loopy(slate_loopy, output_arg, builder, var2terminal, name):
     domains = builder.bag.index_creator.domains
 
     # Generates the loopy wrapper kernel
-    slate_wrapper = lp.make_function(domains, insns, args, name=name,
-                                     seq_dependencies=True, target=lp.CTarget())
+    slate_wrapper = lp.make_function(domains, insns, loopy_args, name=name,
+                                     seq_dependencies=True, target=lp.CTarget(),
+                                     lang_version=(2018, 2))
 
     # Generate program from kernel, so that one can register kernels
     from pyop2.codegen.loopycompat import _match_caller_callee_argument_dimension_
@@ -330,4 +343,4 @@ def merge_loopy(slate_loopy, output_arg, builder, var2terminal, name):
         if isinstance(slate_wrapper.callables_table[name], CallableKernel):
             slate_wrapper = _match_caller_callee_argument_dimension_(slate_wrapper, name)
 
-    return slate_wrapper
+    return slate_wrapper, args

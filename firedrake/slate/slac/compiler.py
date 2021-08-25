@@ -173,7 +173,7 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
                                       tsfc_parameters=compiler_parameters["form_compiler"])
 
     name = "slate_wrapper"
-    loopy_merged = merge_loopy(slate_loopy, output_arg, builder, var2terminal, name)
+    loopy_merged, arguments = merge_loopy(slate_loopy, output_arg, builder, var2terminal, name)
     loopy_merged = loopy.register_callable(loopy_merged, INVCallable.name, INVCallable())
     loopy_merged = loopy.register_callable(loopy_merged, SolveCallable.name, SolveCallable())
 
@@ -181,8 +181,10 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
                              name,
                              include_dirs=BLASLAPACK_INCLUDE.split(),
                              ldargs=BLASLAPACK_LIB.split())
+    loopy_kernel = as_pyop2_local_kernel(loopy_merged)
 
     kinfo = KernelInfo(kernel=loopykernel,
+                       arguments=arguments,
                        integral_type="cell",  # slate can only do things as contributions to the cell integrals
                        oriented=builder.bag.needs_cell_orientations,
                        subdomain_id="otherwise",
@@ -627,6 +629,21 @@ def parenthesize(arg, prec=None, parent=None):
     return "(%s)" % arg
 
 
+# TODO Put somewhere sensible
+import tsfc.kernel_interface.firedrake_loopy as tsfc_utils
+
+class OutputKernelArg(tsfc_utils.KernelArg):
+
+    name = "output"
+
+    def __init__(self, shape, dtype):
+        super().__init__(shape=shape, dtype=dtype)
+
+    @property
+    def loopy_arg(self):
+        return loopy.GlobalArg(self.name, shape=self.shape, dtype=self.dtype, is_output=True, is_input=True)
+
+
 def gem_to_loopy(gem_expr, var2terminal, scalar_type):
     """ Method encapsulating stage 2.
     Converts the gem expression dag into imperoc first, and then further into loopy.
@@ -637,7 +654,8 @@ def gem_to_loopy(gem_expr, var2terminal, scalar_type):
     shape = gem_expr.shape if len(gem_expr.shape) != 0 else (1,)
     idx = make_indices(len(shape))
     indexed_gem_expr = gem.Indexed(gem_expr, idx)
-    args = ([loopy.GlobalArg("output", shape=shape, dtype=scalar_type, is_output=True, is_input=True)]
+    output_arg = OutputKernelArg(shape, scalar_type)
+    args = ([output_arg.loopy_arg]
             + [loopy.GlobalArg(var.name, shape=var.shape, dtype=scalar_type)
                for var in var2terminal.keys()])
     ret_vars = [gem.Indexed(gem.Variable("output", shape), idx)]
@@ -651,7 +669,7 @@ def gem_to_loopy(gem_expr, var2terminal, scalar_type):
     impero_c = impero_utils.compile_gem(assignments, (), remove_zeros=False)
 
     # Part B: impero_c to loopy
-    return generate_loopy(impero_c, args, scalar_type, "slate_loopy", []), args[0].copy()
+    return generate_loopy(impero_c, args, scalar_type, "slate_loopy", []), output_arg
 
 
 def slate_to_cpp(expr, temps, prec=None):

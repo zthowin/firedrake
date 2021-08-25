@@ -18,6 +18,7 @@ from functools import singledispatch
 import firedrake.slate.slate as slate
 from firedrake.slate.slac.tsfc_driver import compile_terminal_form
 
+import tsfc.kernel_interface.firedrake_loopy as tsfc_utils
 from tsfc.loopy import create_domains, assign_dtypes
 
 from pytools import UniqueNameGenerator
@@ -40,6 +41,44 @@ Context information for creating coefficient temporaries.
                relevant data to be placed into the temporary.
 :param local_temp: The local temporary for the coefficient vector.
 """
+
+
+class LayerCountKernelArg(tsfc_utils.KernelArg):
+
+    name = "layer_count"
+    shape = (1,)
+    dtype = np.int32
+    loopy_shape = ()
+    intent = tsfc_utils.Intent.IN
+
+
+class LayerKernelArg(tsfc_utils.KernelArg):
+
+    name = "layer"
+    dtype = np.int32
+    intent = tsfc_utils.Intent.IN
+
+    @property
+    def shape(self):
+        raise NotImplementedError
+
+    @property
+    def loopy_arg(self):
+        return loopy.ValueArg(self.name, dtype=dtype)
+
+
+class CellFacetKernelArg(tsfc_utils.KernelArg):
+
+    name = "cell_facets"
+    dtype = np.int8
+    intent = tsfc_utils.Intent.IN
+
+    def __init__(self, shape):
+        super().__init__(shape=shape)
+
+    @property
+    def loopy_arg(self):
+        return loopy.GlobalArg(self.name, shape=self.shape, dtype=self.dtype)
 
 
 class LocalKernelBuilder(object):
@@ -388,12 +427,9 @@ class LocalKernelBuilder(object):
 
 class LocalLoopyKernelBuilder(object):
 
-    coordinates_arg = "coords"
-    cell_facets_arg = "cell_facets"
-    local_facet_array_arg = "facet_array"
     layer_arg = "layer"
     layer_count = "layer_count"
-    cell_size_arg = "cell_sizes"
+    cell_size_arg = "cell_sizes"  # done
     result_arg = "result"
     cell_orientations_arg = "cell_orientations"
 
@@ -470,17 +506,17 @@ class LocalLoopyKernelBuilder(object):
         """
 
         kernel_data = [(mesh.coordinates,
-                        self.coordinates_arg)]
+                        tsfc_utils.CoordinatesKernelArg.name)]
 
         if kinfo.oriented:
             self.bag.needs_cell_orientations = True
             kernel_data.append((mesh.cell_orientations(),
-                                self.cell_orientations_arg))
+                                tsfc_utils.CellOrientationsKernelArg.name))
 
         if kinfo.needs_cell_sizes:
             self.bag.needs_cell_sizes = True
             kernel_data.append((mesh.cell_sizes,
-                                self.cell_size_arg))
+                                tsfc_utils.CellSizesKernelArg.name))
 
         # Pick the coefficients associated with a Tensor()/TSFC kernel
         tsfc_coefficients = [tsfc_coefficients[i] for i, _ in kinfo.coefficient_map]
@@ -655,37 +691,41 @@ class LocalLoopyKernelBuilder(object):
 
     def generate_wrapper_kernel_args(self, tensor2temp):
         coords_extent = self.extent(self.expression.ufl_domain().coordinates)
-        args = [loopy.GlobalArg(self.coordinates_arg, shape=coords_extent,
-                                dtype=self.tsfc_parameters["scalar_type"])]
+        args = [tsfc_utils.CoordinatesKernelArg(shape=coords_extent,
+                                                dtype=self.tsfc_parameters["scalar_type"])]
 
         if self.bag.needs_cell_orientations:
             ori_extent = self.extent(self.expression.ufl_domain().cell_orientations())
-            args.append(loopy.GlobalArg(self.cell_orientations_arg,
-                                        shape=ori_extent,
-                                        dtype=self.tsfc_parameters["scalar_type"]))
+            # TODO CellOrientationsKernelArg does not currently accept shape kwarg
+            args.append(tsfc_utils.CellOrientationsKernelArg(
+                    shape=ori_extent, dtype=self.tsfc_parameters["scalar_type"]
+                )
+            )
 
         if self.bag.needs_cell_sizes:
             siz_extent = self.extent(self.expression.ufl_domain().cell_sizes)
-            args.append(loopy.GlobalArg(self.cell_size_arg,
-                                        shape=siz_extent,
-                                        dtype=self.tsfc_parameters["scalar_type"]))
+            args.append(tsfc_utils.CellSizesKernelArg(
+                    shape=siz_extent, dtype=self.tsfc_parameters["scalar_type"]
+                )
+            )
 
         for coeff in self.bag.coefficients.values():
             if isinstance(coeff, OrderedDict):
                 for (name, extent) in coeff.values():
-                    arg = loopy.GlobalArg(name, shape=extent,
-                                          dtype=self.tsfc_parameters["scalar_type"])
+                    arg = tsfc_utils.CoefficientKernelArg(
+                        name, shape=extent, dtype=self.tsfc_parameters["scalar_type"]
+                    )
                     args.append(arg)
             else:
                 (name, extent) = coeff
-                arg = loopy.GlobalArg(name, shape=extent,
-                                      dtype=self.tsfc_parameters["scalar_type"])
+                arg = tsfc_utils.CoefficientKernelArg(
+                    name, shape=extent, dtype=self.tsfc_parameters["scalar_type"]
+                )
                 args.append(arg)
 
         if self.bag.needs_cell_facets:
             # Arg for is exterior (==0)/interior (==1) facet or not
-            args.append(loopy.GlobalArg(self.cell_facets_arg, shape=(self.num_facets, 2),
-                                        dtype=np.int8))
+            args.append(CellFacetKernelArg((self.num_facets, 2)))
 
             args.append(
                 loopy.TemporaryVariable(self.local_facet_array_arg,
@@ -695,10 +735,10 @@ class LocalLoopyKernelBuilder(object):
                                         read_only=True,
                                         initializer=np.arange(self.num_facets, dtype=np.uint32),))
 
+        # TODO There are two args added here but only one in assemble?
         if self.bag.needs_mesh_layers:
-            args.append(loopy.GlobalArg(self.layer_count, shape=(),
-                        dtype=np.int32))
-            args.append(loopy.ValueArg(self.layer_arg, dtype=np.int32))
+            args.append(LayerCountKernelArg())
+            args.append(LayerKernelArg())
 
         for tensor_temp in tensor2temp.values():
             args.append(tensor_temp)
