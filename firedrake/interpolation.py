@@ -7,7 +7,7 @@ from ufl.algorithms import extract_arguments
 
 from pyop2 import op2
 
-from tsfc.finatinterface import create_base_element, as_fiat_cell
+from tsfc.finatinterface import create_element, create_base_element, as_fiat_cell
 from tsfc import compile_expression_dual_evaluation
 
 import gem
@@ -237,7 +237,13 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
     from firedrake import tsfc_interface
 
     try:
-        to_element = create_base_element(V.ufl_element())
+        if not isinstance(expr, firedrake.Expression):
+            to_element = create_element(V.ufl_element())
+            if V.ufl_element().mapping() == "symmetries":
+                raise NotImplementedError("Cannot interpolate into tensor spaces with symmetry yet")
+        else:
+            # compile_python_kernel code pathway expects base element
+            to_element = create_base_element(V.ufl_element())
     except KeyError:
         # FInAT only elements
         raise NotImplementedError("Don't know how to create FIAT element for %s" % V.ufl_element())
@@ -298,8 +304,7 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
     if not isinstance(expr, firedrake.Expression):
         kernel = compile_expression_dual_evaluation(expr, to_element,
                                                     domain=source_mesh,
-                                                    parameters=parameters,
-                                                    coffee=False)
+                                                    parameters=parameters)
         ast = kernel.ast
         oriented = kernel.oriented
         needs_cell_sizes = kernel.needs_cell_sizes
@@ -467,7 +472,7 @@ def rebuild_dg(element, expr, rt_var_name):
 def rebuild_te(element, expr, rt_var_name):
     return finat.TensorFiniteElement(rebuild(element.base_element,
                                              expr, rt_var_name),
-                                     element.shape,
+                                     element._shape,
                                      transpose=element._transpose)
 
 
@@ -484,6 +489,9 @@ def composed_map(map1, map2):
     Requires that `map1.toset == map2.iterset`.
     Only currently implemented for `map1.arity == 1`
     """
+    if map2 is None:
+        # Real function space case
+        return None
     if map1.toset != map2.iterset:
         raise ValueError("Cannot compose a map where the intermediate sets do not match!")
     if map1.arity != 1:

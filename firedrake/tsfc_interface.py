@@ -282,7 +282,8 @@ def as_pyop2_local_kernel(tsfc_kernel, access=op2.INC, *, opts={}):
         tsfc_kernel.name,
         kernel_args,
         opts=opts,
-        requires_zeroed_output_arguments=True
+        requires_zeroed_output_arguments=True,
+        flop_count=tsfc_kernel.flop_count
     )
 
 
