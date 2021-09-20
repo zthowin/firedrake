@@ -125,7 +125,8 @@ class TSFCKernel(Cached):
         :arg form: the :class:`~ufl.classes.Form` from which to compile the kernels.
         :arg name: a prefix to be applied to the compiled kernel names. This is primarily useful for debugging.
         :arg parameters: a dict of parameters to pass to the form compiler.
-        :arg number_map: a map from local coefficient numbers to global ones (useful for split forms).
+        :arg number_map: a map from local coefficient numbers
+                         to the split global coefficient numbers.
         :arg interface: the KernelBuilder interface for TSFC (may be None)
         """
         if self._initialized:
@@ -208,9 +209,7 @@ def compile_form(form, name, parameters=None, split=True, interface=None, coffee
         pass
 
     kernels = []
-    # A map from all form coefficients to their number.
-    coefficient_numbers = dict((c, n)
-                               for (n, c) in enumerate(form.coefficients()))
+    coefficient_numbers = form.coefficient_numbering()
     if split:
         iterable = split_form(form, diagonal=diagonal)
     else:
