@@ -13,6 +13,8 @@ import os
 import tempfile
 import collections
 
+import numpy as np
+
 import ufl
 from ufl import Form, conj
 from firedrake.constant import Constant
@@ -319,10 +321,11 @@ def _(tsfc_kernel_arg, *, unroll=False):
         dim = tuple(dim) if dim else (1,)
         return op2.DatWrapperKernelArg(dim, arity)
     elif tsfc_kernel_arg.rank == 2:
+        # rank 2 flatten dim for some reason - this matters for tensor things
         rshape, cshape = tsfc_kernel_arg.shape
         rarity, *rdim = rshape
-        rdim = tuple(rdim) if rdim else (1,)
+        rdim = (np.prod(rdim),) if rdim else (1,)
         carity, *cdim = cshape
-        cdim = tuple(cdim) if cdim else (1,)
+        cdim = (np.prod(cdim),) if cdim else (1,)
         dims = (rdim + cdim)
         return op2.MatWrapperKernelArg(((dims,),), (rarity, carity), unroll=unroll)
