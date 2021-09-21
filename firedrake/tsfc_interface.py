@@ -290,7 +290,7 @@ def as_pyop2_local_kernel(tsfc_kernel, access=op2.INC, *, opts={}):
 
 
 @functools.singledispatch
-def as_pyop2_wrapper_kernel_arg(tsfc_kernel_arg):
+def as_pyop2_wrapper_kernel_arg(tsfc_kernel_arg, **kwargs):
     raise NotImplementedError
 
 
@@ -311,21 +311,24 @@ def _(tsfc_kernel_arg, **kwargs):
     return op2.DatWrapperKernelArg(dim, arity)
 
 
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalTensorKernelArg)
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalScalarKernelArg)
+def _(tsfc_arg, **kwargs):
+    return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
+
+
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalVectorKernelArg)
+def _(tsfc_arg, **kwargs):
+    arity, *dim = tsfc_arg.shape
+    dim = tuple(dim) if dim else (1,)
+    return op2.DatWrapperKernelArg(dim, arity)
+
+
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalMatrixKernelArg)
 def _(tsfc_kernel_arg, *, unroll=False):
-    if tsfc_kernel_arg.rank == 0:
-        return op2.GlobalWrapperKernelArg(tsfc_kernel_arg.shape)
-    elif tsfc_kernel_arg.rank == 1:
-        shape, = tsfc_kernel_arg.shape
-        arity, *dim = shape
-        dim = tuple(dim) if dim else (1,)
-        return op2.DatWrapperKernelArg(dim, arity)
-    elif tsfc_kernel_arg.rank == 2:
-        # rank 2 flatten dim for some reason - this matters for tensor things
-        rshape, cshape = tsfc_kernel_arg.shape
-        rarity, *rdim = rshape
-        rdim = (np.prod(rdim),) if rdim else (1,)
-        carity, *cdim = cshape
-        cdim = (np.prod(cdim),) if cdim else (1,)
-        dims = (rdim + cdim)
-        return op2.MatWrapperKernelArg(((dims,),), (rarity, carity), unroll=unroll)
+    rshape, cshape = tsfc_kernel_arg.shape
+    rarity, *rdim = rshape
+    rdim = (np.prod(rdim),) if rdim else (1,)
+    carity, *cdim = cshape
+    cdim = (np.prod(cdim),) if cdim else (1,)
+    dims = (rdim + cdim)
+    return op2.MatWrapperKernelArg(((dims,),), (rarity, carity), unroll=unroll)
