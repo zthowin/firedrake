@@ -418,6 +418,7 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
             raise ValueError("Have coefficient with unexpected mesh")
         parloop_args.append(op2.DatParloopArg(coefficient.dat, m_))
 
+    # breakpoint()
     parloop_compute_callable = partial(op2.parloop, wrapper_kernel, cell_set, parloop_args)
     if isinstance(tensor, op2.Mat):
         return parloop_compute_callable, tensor.assemble

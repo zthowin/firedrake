@@ -301,34 +301,27 @@ def _(tsfc_kernel_arg, **kwargs):
     return op2.GlobalWrapperKernelArg(tsfc_kernel_arg.shape)
 
 
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoefficientKernelArg)
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoordinatesKernelArg)
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellSizesKernelArg)
-def _(tsfc_kernel_arg, **kwargs):
-    arity, *dim = tsfc_kernel_arg.shape
-    dim = tuple(dim) if dim else (1,)
-    return op2.DatWrapperKernelArg(dim, arity)
-
-
 @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalScalarKernelArg)
 def _(tsfc_arg, **kwargs):
     return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
 
 
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoefficientKernelArg)
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoordinatesKernelArg)
+@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellSizesKernelArg)
 @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalVectorKernelArg)
 def _(tsfc_arg, **kwargs):
-    arity, *dim = tsfc_arg.shape
-    dim = tuple(dim) if dim else (1,)
+    # breakpoint()
+    arity = np.prod(tsfc_arg.basis_shape)
+    dim = tsfc_arg.node_shape or (1,)
     return op2.DatWrapperKernelArg(dim, arity)
 
 
 @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalMatrixKernelArg)
 def _(tsfc_kernel_arg, *, unroll=False):
-    rshape, cshape = tsfc_kernel_arg.shape
-    rarity, *rdim = rshape
-    rdim = (np.prod(rdim),) if rdim else (1,)
-    carity, *cdim = cshape
-    cdim = (np.prod(cdim),) if cdim else (1,)
-    dims = (rdim + cdim)
-    return op2.MatWrapperKernelArg(((dims,),), (rarity, carity), unroll=unroll)
+    rarity = np.prod(tsfc_kernel_arg.rbasis_shape, dtype=int)
+    carity = np.prod(tsfc_kernel_arg.cbasis_shape, dtype=int)
+    rdim = (np.prod(tsfc_kernel_arg.rnode_shape, dtype=int),) or (1,)
+    cdim = (np.prod(tsfc_kernel_arg.cnode_shape, dtype=int),) or (1,)
+    return op2.MatWrapperKernelArg(((rdim+cdim,),), (rarity, carity), unroll=unroll)
