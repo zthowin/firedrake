@@ -301,7 +301,7 @@ def merge_loopy(slate_loopy, output_arg, builder, var2terminal, name):
         tsfc_kernels = ()
 
     # Construct args
-    args = [output_arg] + builder.generate_wrapper_kernel_args(tensor2temp, tsfc_kernels)
+    args = [output_arg] + builder.generate_wrapper_kernel_args(tensor2temp)
 
     # kernel_args is a list of all the non-temporary arguments (i.e. those that get
     # passed in to the kernel).
@@ -343,4 +343,4 @@ def merge_loopy(slate_loopy, output_arg, builder, var2terminal, name):
         if isinstance(slate_wrapper.callables_table[name], CallableKernel):
             slate_wrapper = _match_caller_callee_argument_dimension_(slate_wrapper, name)
 
-    return slate_wrapper, args
+    return slate_wrapper, kernel_args

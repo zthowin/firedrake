@@ -20,6 +20,7 @@ import time
 from hashlib import md5
 
 from firedrake_citations import Citations
+from firedrake import tsfc_interface
 from firedrake.tsfc_interface import SplitKernel, KernelInfo, TSFCKernel
 
 from firedrake.slate.slac.kernel_builder import LocalLoopyKernelBuilder, LocalKernelBuilder
@@ -85,6 +86,8 @@ cell_to_facets_dtype = np.dtype(np.int8)
 class SlateKernel(TSFCKernel):
     @classmethod
     def _cache_key(cls, expr, compiler_parameters, coffee):
+        # TODO temporarily disable caching
+        return None
         return md5((expr.expression_hash
                     + str(sorted(compiler_parameters.items()))
                     + str(coffee)).encode()).hexdigest(), expr.ufl_domains()[0].comm
@@ -177,14 +180,15 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
     loopy_merged = loopy.register_callable(loopy_merged, INVCallable.name, INVCallable())
     loopy_merged = loopy.register_callable(loopy_merged, SolveCallable.name, SolveCallable())
 
-    loopykernel = op2.Kernel(loopy_merged,
-                             name,
-                             include_dirs=BLASLAPACK_INCLUDE.split(),
-                             ldargs=BLASLAPACK_LIB.split())
-    loopy_kernel = as_pyop2_local_kernel(loopy_merged)
+    pyop2_kernel = tsfc_interface.as_pyop2_local_kernel(
+        loopy_merged,
+        name,
+        arguments,
+        include_dirs=BLASLAPACK_INCLUDE.split(),
+        ldargs=BLASLAPACK_LIB.split()
+    )
 
-    kinfo = KernelInfo(kernel=loopykernel,
-                       arguments=arguments,
+    kinfo = KernelInfo(kernel=pyop2_kernel,
                        integral_type="cell",  # slate can only do things as contributions to the cell integrals
                        oriented=builder.bag.needs_cell_orientations,
                        subdomain_id="otherwise",
@@ -192,7 +196,8 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
                        coefficient_map=slate_expr.coeff_map,
                        needs_cell_facets=builder.bag.needs_cell_facets,
                        pass_layer_arg=builder.bag.needs_mesh_layers,
-                       needs_cell_sizes=builder.bag.needs_cell_sizes)
+                       needs_cell_sizes=builder.bag.needs_cell_sizes,
+                       tsfc_kernel_args=arguments)
 
     # Cache the resulting kernel
     # Slate kernels are never split, so indicate that with None in the index slot.
@@ -635,6 +640,7 @@ import tsfc.kernel_interface.firedrake_loopy as tsfc_utils
 class OutputKernelArg(tsfc_utils.KernelArg):
 
     name = "output"
+    intent = tsfc_utils.Intent.OUT
 
     def __init__(self, shape, dtype):
         super().__init__(shape=shape, dtype=dtype)
@@ -654,7 +660,14 @@ def gem_to_loopy(gem_expr, var2terminal, scalar_type):
     shape = gem_expr.shape if len(gem_expr.shape) != 0 else (1,)
     idx = make_indices(len(shape))
     indexed_gem_expr = gem.Indexed(gem_expr, idx)
-    output_arg = OutputKernelArg(shape, scalar_type)
+    # TODO Ok so here's the situation:
+    # The shape can be a 2-tuple here (e.g. `(12, 12)`). Which output type do we then go for?
+    # We don't have the same access to a FInAT element here...
+    # output_arg = OutputKernelArg(shape, scalar_type)
+    output_arg = tsfc_utils.LocalVectorKernelArg(basis_shape=shape, node_shape=(), dtype=scalar_type)
+    breakpoint()
+    # hack
+    output_arg.name = "output"
     args = ([output_arg.loopy_arg]
             + [loopy.GlobalArg(var.name, shape=var.shape, dtype=scalar_type)
                for var in var2terminal.keys()])

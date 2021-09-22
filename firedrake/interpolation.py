@@ -312,12 +312,15 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
         first_coeff_fake_coords = kernel.first_coefficient_fake_coords
         name = kernel.name
 
+        local_kernel = tsfc_interface.as_pyop2_local_kernel(
+            kernel.ast, kernel.name, kernel.arguments, access
+        )
         wrapper_kernel_args = [
             tsfc_interface.as_pyop2_wrapper_kernel_arg(arg)
             for arg in kernel.arguments
         ]
         wrapper_kernel = op2.WrapperKernel(
-            tsfc_interface.as_pyop2_local_kernel(kernel, access),
+            local_kernel,
             wrapper_kernel_args,
             pass_layer_arg=False,
             extruded=extruded,

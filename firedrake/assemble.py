@@ -476,7 +476,7 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
             unroll=None
 
         wrapper_kernel_args = [tsfc_interface.as_pyop2_wrapper_kernel_arg(arg, unroll=unroll)
-                               for arg in kinfo.orig_kernel.arguments]
+                               for arg in kinfo.tsfc_kernel_args]
 
         iteration_region = {
             "exterior_facet_top": op2.ON_TOP,

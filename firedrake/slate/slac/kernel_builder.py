@@ -691,7 +691,9 @@ class LocalLoopyKernelBuilder(object):
 
     def generate_wrapper_kernel_args(self, tensor2temp):
         coords_extent = self.extent(self.expression.ufl_domain().coordinates)
-        args = [tsfc_utils.CoordinatesKernelArg(shape=coords_extent,
+        # TODO guess that basis_shape is implied instead of node_shape
+        args = [tsfc_utils.CoordinatesKernelArg(basis_shape=coords_extent,
+                                                node_shape=(),
                                                 dtype=self.tsfc_parameters["scalar_type"])]
 
         if self.bag.needs_cell_orientations:

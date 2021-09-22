@@ -41,7 +41,6 @@ tsfc_default_parameters["scalar_type_c"] = utils.ScalarType_c
 
 KernelInfo = collections.namedtuple("KernelInfo",
                                     ["kernel",
-                                     "orig_kernel",
                                      "integral_type",
                                      "oriented",
                                      "subdomain_id",
@@ -141,8 +140,9 @@ class TSFCKernel(Cached):
             ast = kernel.ast
             # Unwind coefficient numbering
             numbers = tuple(number_map[c] for c in kernel.coefficient_numbers)
-            kernels.append(KernelInfo(kernel=as_pyop2_local_kernel(kernel, opts=opts),
-                                      orig_kernel=kernel,
+            pyop2_kernel = as_pyop2_local_kernel(kernel.ast, kernel.name, kernel.arguments,
+                    flop_count=kernel.flop_count, opts=opts)
+            kernels.append(KernelInfo(kernel=pyop2_kernel,
                                       integral_type=kernel.integral_type,
                                       oriented=kernel.oriented,
                                       subdomain_id=kernel.subdomain_id,
@@ -272,20 +272,19 @@ def _ensure_cachedir(comm=None):
         makedirs(TSFCKernel._cachedir, exist_ok=True)
 
 
-def as_pyop2_local_kernel(tsfc_kernel, access=op2.INC, *, opts={}):
+def as_pyop2_local_kernel(ast, name, arguments, access=op2.INC, **kwargs):
     """TODO"""
     access_map = {tsfc_utils.Intent.IN: op2.READ, tsfc_utils.Intent.OUT: access}
     kernel_args = [
         op2.LocalKernelArg(access_map[arg.intent], arg.dtype)
-        for arg in tsfc_kernel.arguments
+        for arg in arguments
     ]
     return op2.Kernel(
-        tsfc_kernel.ast,
-        tsfc_kernel.name,
+        ast,
+        name,
         kernel_args,
-        opts=opts,
         requires_zeroed_output_arguments=True,
-        flop_count=tsfc_kernel.flop_count
+        **kwargs
     )
 
 
@@ -312,7 +311,6 @@ def _(tsfc_arg, **kwargs):
 @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellSizesKernelArg)
 @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalVectorKernelArg)
 def _(tsfc_arg, **kwargs):
-    # breakpoint()
     arity = np.prod(tsfc_arg.basis_shape)
     dim = tsfc_arg.node_shape or (1,)
     return op2.DatWrapperKernelArg(dim, arity)
