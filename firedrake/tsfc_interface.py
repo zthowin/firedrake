@@ -318,6 +318,13 @@ def _(tsfc_arg, **kwargs):
 
 @as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalMatrixKernelArg)
 def _(tsfc_kernel_arg, *, unroll=False):
+    # TODO Clean up
+    if tsfc_kernel_arg.rreal:
+        raise NotImplementedError
+    if tsfc_kernel_arg.creal:
+        arity = np.prod(tsfc_kernel_arg.rbasis_shape, dtype=int)
+        dim = (np.prod(tsfc_kernel_arg.rnode_shape, dtype=int),) or (1,)
+        return op2.MatButActuallyDatWrapperKernelArg(dim, arity)
     rarity = np.prod(tsfc_kernel_arg.rbasis_shape, dtype=int)
     carity = np.prod(tsfc_kernel_arg.cbasis_shape, dtype=int)
     rdim = (np.prod(tsfc_kernel_arg.rnode_shape, dtype=int),) or (1,)

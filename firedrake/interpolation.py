@@ -235,7 +235,6 @@ def make_interpolator(expr, V, subset, access):
 @utils.known_pyop2_safe
 def _interpolator(V, tensor, expr, subset, arguments, access):
     from firedrake import tsfc_interface
-
     try:
         if not isinstance(expr, firedrake.Expression):
             to_element = create_element(V.ufl_element())
@@ -394,7 +393,15 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
             # function space nodes on the source mesh.
             columns_map = compose_map_and_cache(target_mesh.cell_parent_cell_map,
                                                 columns_map)
-        parloop_args.append(op2.MatParloopArg(tensor, (rows_map, columns_map)))
+
+        # stopgap - this should be singledispatch like assemble
+        if isinstance(wrapper_kernel_args[0], op2.MatWrapperKernelArg):
+            parloop_args.append(op2.MatParloopArg(tensor, (rows_map, columns_map)))
+        elif isinstance(wrapper_kernel_args[0], op2.MatButActuallyDatWrapperKernelArg):
+            parloop_args.append(op2.DatParloopArg(tensor.handle.getPythonContext().dat, rows_map or columns_map))
+        else:
+            raise AssertionError
+
     if oriented:
         co = target_mesh.cell_orientations()
         parloop_args.append(op2.DatParloopArg(co.dat, co.cell_node_map()))
