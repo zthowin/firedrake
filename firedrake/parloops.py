@@ -6,7 +6,7 @@ import collections
 from ufl.indexed import Indexed
 from ufl.domain import join_domains
 
-from pyop2 import READ, WRITE, RW, INC, MIN, MAX
+from pyop2 import op2, READ, WRITE, RW, INC, MIN, MAX
 import pyop2
 import pyop2.legacy
 import loopy
@@ -131,7 +131,7 @@ def _form_loopy_kernel(kernel_domains, instructions, measure, args, **kwargs):
         kargs.append(...)
         knl = loopy.make_function(kernel_domains, instructions, kargs, name="par_loop_kernel", target=loopy.CTarget(),
                                   seq_dependencies=True, silenced_warnings=["summing_if_branches_ops"])
-        knl = pyop2.Kernel(knl, "par_loop_kernel", **kwargs)
+        knl = op2.Kernel(knl, "par_loop_kernel", **kwargs)
         if kernel_cache is not None:
             return kernel_cache.setdefault(key, knl)
         else:
@@ -169,7 +169,7 @@ def _form_string_kernel(body, measure, args, **kwargs):
             kargs.append(ast.Decl(ScalarType_c, ast.Symbol(var, (ndof, ))))
         body = body.replace(var+".dofs", str(ndof))
 
-    return pyop2.Kernel(ast.FunDecl("void", "par_loop_kernel", kargs,
+    return op2.Kernel(ast.FunDecl("void", "par_loop_kernel", kargs,
                                     ast.FlatBlock(body),
                                     pred=["static"]),
                         "par_loop_kernel", **kwargs)
