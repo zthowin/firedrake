@@ -690,10 +690,23 @@ class LocalLoopyKernelBuilder(object):
         return insn
 
     def generate_wrapper_kernel_args(self, tensor2temp):
-        coords_extent = self.extent(self.expression.ufl_domain().coordinates)
-        # TODO guess that basis_shape is implied instead of node_shape
-        args = [tsfc_utils.CoordinatesKernelArg(basis_shape=coords_extent,
-                                                node_shape=(),
+        # this needs to have dim and arity retrievable here
+        breakpoint()
+        # coords_extent = self.extent(self.expression.ufl_domain().coordinates)
+        coords = self.expression.ufl_domain().coordinates
+        import tsfc
+        import finat
+
+        coords_el = tsfc.finatinterface.create_element(coords.ufl_element())
+        if isinstance(coords_el, finat.TensorFiniteElement):
+            basis_shape = coords_el.index_shape[:-len(coords_el._shape)]
+            node_shape = coords_el._shape
+        else:
+            basis_shape = coords_el.index_shape
+            node_shape = ()
+ 
+        args = [tsfc_utils.CoordinatesKernelArg(basis_shape=basis_shape,
+                                                node_shape=node_shape,
                                                 dtype=self.tsfc_parameters["scalar_type"])]
 
         if self.bag.needs_cell_orientations:

@@ -165,12 +165,58 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
     if compiler_parameters["slate_compiler"]["optimise"]:
         slate_expr = optimise(slate_expr)
 
+    scalar_type = compiler_parameters["form_compiler"]["scalar_type"]
+
+    # TODO Clean up A LOT
+    from tsfc.finatinterface import create_element
+    import finat
+    arguments = slate_expr.arguments()
+    if len(arguments) == 0:
+        raise NotImplementedError
+    elif len(arguments) == 1:
+        argument, = arguments
+        el = create_element(argument.ufl_element())
+        if isinstance(el, finat.TensorFiniteElement):
+            basis_shape = el.index_shape[:-len(el._shape)]
+            node_shape = el._shape
+        else:
+            basis_shape = el.index_shape
+            node_shape = ()
+        output_arg = tsfc_utils.LocalVectorKernelArg(basis_shape=basis_shape, name="output", dtype=scalar_type, node_shape=node_shape)
+    elif len(arguments) == 2:
+        rargument, cargument = arguments
+        rel = create_element(rargument.ufl_element())
+        cel = create_element(cargument.ufl_element())
+
+        if isinstance(rel, finat.TensorFiniteElement):
+            rbasis_shape = rel.index_shape[:-len(rel._shape)]
+            rnode_shape = rel._shape
+        else:
+            rbasis_shape = rel.index_shape
+            rnode_shape = ()
+
+        if isinstance(cel, finat.TensorFiniteElement):
+            cbasis_shape = cel.index_shape[:-len(cel._shape)]
+            cnode_shape = cel._shape
+        else:
+            cbasis_shape = cel.index_shape
+            cnode_shape = ()
+
+        output_arg = tsfc_utils.LocalMatrixKernelArg(
+            rbasis_shape=rbasis_shape,
+            cbasis_shape=cbasis_shape,
+            rnode_shape=rnode_shape,
+            cnode_shape=cnode_shape,
+            name="output",
+            dtype=scalar_type)
+    else:
+        raise AssertionError
+
     # Create a loopy builder for the Slate expression,
     # e.g. contains the loopy kernels coming from TSFC
     gem_expr, var2terminal = slate_to_gem(slate_expr)
 
-    scalar_type = compiler_parameters["form_compiler"]["scalar_type"]
-    slate_loopy, output_arg = gem_to_loopy(gem_expr, var2terminal, scalar_type)
+    slate_loopy = gem_to_loopy(gem_expr, var2terminal, scalar_type, output_arg)
 
     builder = LocalLoopyKernelBuilder(expression=slate_expr,
                                       tsfc_parameters=compiler_parameters["form_compiler"])
@@ -637,6 +683,7 @@ def parenthesize(arg, prec=None, parent=None):
 # TODO Put somewhere sensible
 import tsfc.kernel_interface.firedrake_loopy as tsfc_utils
 
+# TODO can delete
 class OutputKernelArg(tsfc_utils.KernelArg):
 
     name = "output"
@@ -650,7 +697,7 @@ class OutputKernelArg(tsfc_utils.KernelArg):
         return loopy.GlobalArg(self.name, shape=self.shape, dtype=self.dtype, is_output=True, is_input=True)
 
 
-def gem_to_loopy(gem_expr, var2terminal, scalar_type):
+def gem_to_loopy(gem_expr, var2terminal, scalar_type, output_arg):
     """ Method encapsulating stage 2.
     Converts the gem expression dag into imperoc first, and then further into loopy.
     :return slate_loopy: 2-tuple of loopy kernel for slate operations
@@ -660,14 +707,6 @@ def gem_to_loopy(gem_expr, var2terminal, scalar_type):
     shape = gem_expr.shape if len(gem_expr.shape) != 0 else (1,)
     idx = make_indices(len(shape))
     indexed_gem_expr = gem.Indexed(gem_expr, idx)
-    # TODO Ok so here's the situation:
-    # The shape can be a 2-tuple here (e.g. `(12, 12)`). Which output type do we then go for?
-    # We don't have the same access to a FInAT element here...
-    # output_arg = OutputKernelArg(shape, scalar_type)
-    output_arg = tsfc_utils.LocalVectorKernelArg(basis_shape=shape, node_shape=(), dtype=scalar_type)
-    breakpoint()
-    # hack
-    output_arg.name = "output"
     args = ([output_arg.loopy_arg]
             + [loopy.GlobalArg(var.name, shape=var.shape, dtype=scalar_type)
                for var in var2terminal.keys()])
@@ -682,7 +721,7 @@ def gem_to_loopy(gem_expr, var2terminal, scalar_type):
     impero_c = impero_utils.compile_gem(assignments, (), remove_zeros=False)
 
     # Part B: impero_c to loopy
-    return generate_loopy(impero_c, args, scalar_type, "slate_loopy", []), output_arg
+    return generate_loopy(impero_c, args, scalar_type, "slate_loopy", [])
 
 
 def slate_to_cpp(expr, temps, prec=None):
