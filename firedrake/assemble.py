@@ -28,8 +28,8 @@ __all__ = ("assemble",)
 @dataclass(frozen=True)
 class LocalKernel:
 
-    # pyop2_kernel: op2.LocalKernel  # new name
     pyop2_kernel: op2.Kernel
+    tsfc_args: list
 
 
 class _LocalKernelBuilder:
@@ -86,74 +86,58 @@ def _make_local_kernel(expr, **kwargs):
 class WrapperKernel:
 
     pyop2_kernel: op2.WrapperKernel
+    local_kernel: LocalKernel
+
+    @property
+    def tsfc_args(self):
+        return self.local_kernel.tsfc_args
+
+    @property
+    def tsfc_kernel(self):
+        return self.local_kernel.tsfc_kernel
+
+
+@dataclass(frozen=True)
+class WrapperKernelData:
+    """Class encapsulating any additional information required to make a wrapper kernel.
+
+    This information is 'additional' in the sense that one could not obtain it from a
+    pure-UFL form.
+    """
+
+    extruded: bool = False
+    constant_layers: bool = False
+    subset: bool = False
+    unroll: bool = False
+
+    def __post_init__(self):
+        if constant_layers and not extruded:
+            raise ValueError("constant_layers is only valid when extruded is True")
 
 
 # TODO different class for Slate (local + wrapper)
 class _WrapperKernelBuilder:
 
-    def __init__(
-        self,
-        expr,
-        *,
-        extruded=False,
-        constant_layers=False,
-        subset=False,
-        unroll=False,
-        **kwargs
-    ):
+    def __init__(self, expr, kernel_data, **kwargs):
         """TODO
 
         .. note::
 
             expr should work even if it is 'pure UFL'.
-
-        .. note::
-
-            Although extruded, constant_layers and subset can all be retrieved from expr,
-            they are not 'UFL-level' concepts and so are passed in separately.
         """
-        if constant_layers and not extruded:
-            raise ValueError("constant_layers is only valid when extruded is True")
-
         self._expr = expr
-        self._extruded = extruded
-        self._constant_layers = constant_layers
-        self._subset = subset
-        self._unroll = unroll
+        self._kernel_data = kernel_data
         self._local_kernel_kwargs = kwargs or {}
 
     def build(self):
         local_kernels = _make_local_kernels(self._expr, **self._local_kernel_kwargs)
 
         wrapper_kernels = []
-        for local_kernel in local_kernels:
-            ...
-            wrapper_kernels.append(wrapper_kernel)
-
-        return wrapper_kernels
-
-        for indices, kinfo in expr_kernels:
-            # kwargs for wrapper kernel
-            if assembly_rank == _AssemblyRank.MATRIX:
-                test, trial = expr.arguments()
-                Vrow = test.function_space()
-                Vcol = trial.function_space()
-                row, col = indices
-                if row is None and col is None:
-                    lgmaps, unroll = zip(*(_collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, i, j)
-                                           for i, j in numpy.ndindex(tensor.block_shape)))
-                    lgmaps = tuple(lgmaps)
-                    unroll = any(unroll)
-                else:
-                    assert row is not None and col is not None
-                    lgmaps, unroll = _collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, row, col)
-                    lgmaps = (lgmaps,)
-            else:
-                lgmaps = None
-                unroll=None
-
-            wrapper_kernel_args = [tsfc_interface.as_pyop2_wrapper_kernel_arg(arg, unroll=self._unroll)
-                                   for arg in kinfo.tsfc_kernel_args]
+        for local_kernel, kernel_data in zip(local_kernels, self._kernel_data):
+            wrapper_kernel_args = [
+                tsfc_interface.as_pyop2_wrapper_kernel_arg(arg, unroll=kernel_data.unroll)
+                for arg in kinfo.tsfc_kernel_args
+            ]
 
             iteration_region = {
                 "exterior_facet_top": op2.ON_TOP,
@@ -166,12 +150,15 @@ class _WrapperKernelBuilder:
                 wrapper_kernel_args,
                 iteration_region=iteration_region,
                 pass_layer_arg=kinfo.pass_layer_arg,
-                extruded=self._extruded,
-                constant_layers=self._constant_layers,
-                subset=self._subset
+                extruded=kernel_data.extruded,
+                constant_layers=kernel_data.constant_layers,
+                subset=kernel_data.subset
             )
 
-            return WrapperKernel(pyop2_kernel)  # + bits
+            wrapper_kernel = WrapperKernel(pyop2_kernel)  # + bits
+            wrapper_kernels.append(wrapper_kernel)
+
+        return wrapper_kernels
 
     def _as_wrapper_kernel_argument(self, tsfc_arg):
         return _as_wrapper_kernel_argument(tsfc_arg, self)
@@ -196,9 +183,17 @@ def _():
 #############################################################
 
 
-class ParloopBuilder:
+@dataclass(frozen=True)
+class ParloopData:
+    """TODO"""
 
-    def __init__(self, expr, *, lgmaps=None, unroll=False):
+    lgmaps: typing.Optional = None
+    unroll: bool = False
+
+
+class ParloopExecutor:
+
+    def __init__(self, expr, tensor, parloop_data, *, **kwargs):
         """
 
         .. note::
@@ -207,29 +202,160 @@ class ParloopBuilder:
             attached. This means that we cannot safely cache the resulting object.
         """
         self._expr = expr
-        self._lgmaps = lgmaps
-        self._unroll = unroll
+        self._parloop_data = parloop_data
+        self._tensor = tensor
+        self._wrapper_kernel_kwargs = kwargs
 
-    def build(self):
-        # these will not work since per-loop iterset needed
-        iterset = _get_iterset(expr, kinfo, all_integer_subdomain_ids)
-        extruded = isinstance(iterset, op2.ExtrudedSet)
-        constant_layers = extruded and iterset.constant_layers
-        subset = isinstance(iterset, op2.Subset)
+    def run(self):
+        wrapper_kernel_data = []
+
+        for integral, parloop_data in zip(self._expr.integrals(), self._parloop_data):
+            # since we are at 'Firedrake-level' we can inspect Firedrake objects
+            breakpoint()  # TODO get the following from the Firedrake function space
+            raise NotImplementedError
+            extruded = isinstance(iterset, op2.ExtrudedSet)
+            constant_layers = extruded and iterset.constant_layers
+            subset = isinstance(iterset, op2.Subset)
+            kernel_data_ = WrapperKernelData(unroll=parloop_data.unroll)
+            wrapper_kernel_data.append(kernel_data_)
 
         wrapper_kernels = _make_wrapper_kernels(
             self._expr,
-            extruded=extruded,
-            constant_layers=constant_layers,
-            subset=subset,
-            unroll=unroll
+            wrapper_kernel_data
         )
 
-        # TODO create a tensor
+        # Icky generator so we can access the correct coefficients in order
+        def coeffs():
+            for n, split_map in kinfo.coefficient_map:
+                c = form.coefficients()[n]
+                split_c = c.split()
+                for c_ in (split_c[i] for i in split_map):
+                    yield c_
+        self.coeffs_iterator = iter(coeffs())
+
+        if kinfo.needs_cell_facets:
+            raise NotImplementedError("Need to fix in Slate")
+            assert integral_type == "cell"
+            extra_args.append(m.cell_to_facets(op2.READ))
+
+        if kinfo.pass_layer_arg:
+            raise NotImplementedError("Need to fix in Slate")
+            c = op2.Global(1, itspace.layers-2, dtype=numpy.dtype(numpy.int32))
+            o = c(op2.READ)
+            extra_args.append(o)
+
+        # TODO find another way
+        # These will be used to correctly interpret the "otherwise" subdomain
+        all_integer_subdomain_ids = defaultdict(list)
+        for wrapper_kernel in wrapper_kernels:
+            kinfo = wrapper_kernel.kinfo
+            if kinfo.subdomain_id != "otherwise":
+                all_integer_subdomain_ids[kinfo.integral_type].append(kinfo.subdomain_id)
+
+        for k, v in all_integer_subdomain_ids.items():
+            all_integer_subdomain_ids[kinfo] = tuple(sorted(v))
 
         for wrapper_kernel in wrapper_kernels:
-            # TODO parse args
-            op2.Parloop(wrapper_kernel, iterset, indices, kinfo, expr, tensor, lgmaps=lgmaps)
+            iterset = _get_iterset(expr, wrapper_kernel.kinfo, all_integer_subdomain_ids)
+            parloop_args = [
+                _as_parloop_arg(tsfc_arg, self, wrapper_kernel)
+                for tsfc_arg in wrapper_kernel.tsfc_args
+            ]
+            try:
+                op2.parloop(wrapper_kernel.pyop2_kernel, iterset, parloop_args)
+            except MapValueError:
+                raise RuntimeError("Integral measure does not match measure of all "
+                                   "coefficients/arguments")
+
+
+# TODO Make into a singledispatchmethod when we have Python 3.8
+@functools.singledispatch
+def _as_parloop_arg(tsfc_arg, self):
+    """Return a :class:`op2.ParloopArg` corresponding to the provided
+    :class:`tsfc.KernelArg`.
+    """
+    raise NotImplementedError
+
+
+@_as_parloop_arg.register(tsfc_utils.CoordinatesKernelArg)
+def _(tsfc_arg, self, wrapper_kernel):
+    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    func = mesh.coordinates
+    map_ = _get_map(func.function_space(), kinfo.integral_type)
+    return op2.DatParloopArg(func.dat, map_)
+
+@_as_parloop_arg.register(tsfc_utils.CellOrientationsKernelArg)
+def _(tsfc_arg, self, wrapper_kernel):
+    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    func = mesh.cell_orientations()
+    map_ = _get_map(func.function_space(), kinfo.integral_type)
+    return op2.DatParloopArg(func.dat, map_)
+
+@_as_parloop_arg.register(tsfc_utils.CellSizesKernelArg)
+def _(tsfc_arg, self, wrapper_kernel):
+    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    func = mesh.cell_sizes
+    map_ = _get_map(func.function_space(), kinfo.integral_type)
+    return op2.DatParloopArg(func.dat, map_)
+
+@_as_parloop_arg.register(tsfc_utils.ExteriorFacetKernelArg)
+def _(tsfc_arg, self, wrapper_kernel):
+    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    return op2.DatParloopArg(mesh.exterior_facets.local_facet_dat)
+
+@_as_parloop_arg.register(tsfc_utils.InteriorFacetKernelArg)
+def _(tsfc_arg, self, wrapper_kernel):
+    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    return op2.DatParloopArg(mesh.interior_facets.local_facet_dat)
+
+@_as_parloop_arg.register(tsfc_utils.ConstantKernelArg)
+@_as_parloop_arg.register(tsfc_utils.CoefficientKernelArg)
+def _(tsfc_arg, self, wrapper_kernel):
+    coeff = next(self.coeffs_iterator)
+    if tsfc_arg.rank == 0:
+        return op2.GlobalParloopArg(coeff.dat)
+    elif tsfc_arg.rank == 1:
+        return op2.DatParloopArg(coeff.dat, _get_map(coeff.function_space(), kinfo.integral_type))
+    else:
+        raise AssertionError("TODO")
+
+@_as_parloop_arg.register(tsfc_utils.LocalTensorKernelArg)
+def _(tsfc_arg, self, wrapper_kernel):
+    # TODO New types for Scalar/Vector/Matrix
+    if tsfc_arg.rank == 0:
+        return op2.GlobalParloopArg(tensor)
+    elif tsfc_arg.rank == 1:
+        i, = indices
+        if i is None:
+            return op2.DatParloopArg(
+                tensor.dat, _get_map(tensor.function_space(), kinfo.integral_type)
+            )
+        else:
+            return op2.DatParloopArg(
+                tensor.dat[i], 
+                _get_map(tensor.function_space()[i], kinfo.integral_type)
+            )
+    elif tsfc_arg.rank == 2:
+        i, j = indices
+        test, trial = tensor.a.arguments()
+        if i is None and j is None:
+            rmap = _get_map(test.function_space(), kinfo.integral_type)
+            cmap = _get_map(trial.function_space(), kinfo.integral_type)
+            return op2.MatParloopArg(tensor.M, (rmap, cmap), lgmaps=lgmaps)
+        else:
+            assert i is not None and j is not None
+            rmap = _get_map(test.function_space()[i], kinfo.integral_type)
+            cmap = _get_map(trial.function_space()[j], kinfo.integral_type)
+            return op2.MatParloopArg(tensor.M[i, j], (rmap, cmap), lgmaps=lgmaps)
+    else:
+        raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
+
+
+
+
+# Do NOT cache this
+def _execute_parloops(*args, **kwargs):
+    ParloopExecutor(*args, **kwargs).run()
 
 
 
@@ -642,7 +768,7 @@ def _make_matrix(expr, bcs, opts):
                          options_prefix=opts.options_prefix)
 
 
-def _assemble_expr(expr, bcs, *, tensor=None, **kwargs):
+def _assemble_expr(expr, tensor, bcs, *, **kwargs):
     """Assemble an expression into the provided tensor.
 
     :arg expr: The expression to be assembled.
@@ -653,21 +779,12 @@ def _assemble_expr(expr, bcs, *, tensor=None, **kwargs):
     :arg opts: :class:`_AssemblyOpts` containing the assembly options.
     :arg assembly_rank: The appropriate :class:`_AssemblyRank`.
     """
-    # TODO find another way
-    # These will be used to correctly interpret the "otherwise" subdomain
-    all_integer_subdomain_ids = defaultdict(list)
-    for _, kinfo in expr_kernels:
-        if kinfo.subdomain_id != "otherwise":
-            all_integer_subdomain_ids[kinfo.integral_type].append(kinfo.subdomain_id)
-    for k, v in all_integer_subdomain_ids.items():
-        all_integer_subdomain_ids[kinfo] = tuple(sorted(v))
-
-    # TODO find another way
-    # TODO bcs should not be seen at this level - move outwards.
     # TODO bcs has structure - I don't want to hide that
     if bcs:
         raise NotImplementedError
-    for indices, kinfo in expr_kernels:
+
+    parloop_data = []
+    for indices, _ in expr_kernels:
         if assembly_rank == _AssemblyRank.MATRIX:
             test, trial = expr.arguments()
             Vrow = test.function_space()
@@ -684,27 +801,14 @@ def _assemble_expr(expr, bcs, *, tensor=None, **kwargs):
             lgmaps = None
             unroll = False
 
+        parloop_data.append(ParloopData(lgmaps, unroll))
 
-    tensor = _do_parloops(
-        expr,
-        **kwargs
-        # TODO pass tensor arg
-    )
+    # TODO Move tensor construction to here
+    if tensor is None:
+        raise NotImplementedError
+
+    _execute_parloops(expr, tensor, parloop_data, **kwargs)
     _apply_bcs(bcs, tensor, opts, assembly_rank)
-
-
-def needs_unrolling(bcs, Vrow, Vcol, row, col):
-    """TODO"""
-    if len(Vrow) > 1:
-        rbcs = tuple(bc for bc in bcs if bc.function_space_index() == row)
-    else:
-        rbcs = bcs
-
-    if len(Vcol) > 1:
-        cbcs = tuple(bc for bc in bcs if bc.function_space_index() == col
-                     and isinstance(bc, DirichletBC))
-    else:
-        cbcs = tuple(bc for bc in bcs if isinstance(bc, DirichletBC))
 
 
 
@@ -835,118 +939,6 @@ def _apply_dirichlet_bcs(tensor, bcs, opts, assembly_rank):
     else:
         raise AssertionError
 
-
-def _do_parloop(wrapper_kernel, iterset, indices, kinfo, form, tensor, lgmaps=None):
-    """TODO"""
-
-    @functools.singledispatch
-    def as_pyop2_parloop_arg(tsfc_arg):
-        """Return a :class:`op2.ParloopArg` corresponding to the provided
-        :class:`tsfc.KernelArg`.
-        """
-        raise NotImplementedError
-
-    @as_pyop2_parloop_arg.register(tsfc_utils.CoordinatesKernelArg)
-    def _(tsfc_arg):
-        func = mesh.coordinates
-        map_ = _get_map(func.function_space(), kinfo.integral_type)
-        return op2.DatParloopArg(func.dat, map_)
-
-    @as_pyop2_parloop_arg.register(tsfc_utils.CellOrientationsKernelArg)
-    def _(tsfc_arg):
-        # TODO Make cell_orientations a property for tidiness
-        func = mesh.cell_orientations()
-        map_ = _get_map(func.function_space(), kinfo.integral_type)
-        return op2.DatParloopArg(func.dat, map_)
-
-    @as_pyop2_parloop_arg.register(tsfc_utils.CellSizesKernelArg)
-    def _(tsfc_arg):
-        func = mesh.cell_sizes
-        map_ = _get_map(func.function_space(), kinfo.integral_type)
-        return op2.DatParloopArg(func.dat, map_)
-
-    @as_pyop2_parloop_arg.register(tsfc_utils.ExteriorFacetKernelArg)
-    def _(tsfc_arg):
-        return op2.DatParloopArg(mesh.exterior_facets.local_facet_dat)
-
-    @as_pyop2_parloop_arg.register(tsfc_utils.InteriorFacetKernelArg)
-    def _(tsfc_arg):
-        return op2.DatParloopArg(mesh.interior_facets.local_facet_dat)
-
-    @as_pyop2_parloop_arg.register(tsfc_utils.ConstantKernelArg)
-    @as_pyop2_parloop_arg.register(tsfc_utils.CoefficientKernelArg)
-    def _(tsfc_arg):
-        coeff = next(coeffs_iterator)
-        if tsfc_arg.rank == 0:
-            return op2.GlobalParloopArg(coeff.dat)
-        elif tsfc_arg.rank == 1:
-            return op2.DatParloopArg(coeff.dat, _get_map(coeff.function_space(), kinfo.integral_type))
-        else:
-            raise AssertionError("TODO")
-
-    @as_pyop2_parloop_arg.register(tsfc_utils.LocalTensorKernelArg)
-    def _(tsfc_arg):
-        # TODO New types for Scalar/Vector/Matrix
-        if tsfc_arg.rank == 0:
-            return op2.GlobalParloopArg(tensor)
-        elif tsfc_arg.rank == 1:
-            i, = indices
-            if i is None:
-                return op2.DatParloopArg(
-                    tensor.dat, _get_map(tensor.function_space(), kinfo.integral_type)
-                )
-            else:
-                return op2.DatParloopArg(
-                    tensor.dat[i], 
-                    _get_map(tensor.function_space()[i], kinfo.integral_type)
-                )
-        elif tsfc_arg.rank == 2:
-            i, j = indices
-            test, trial = tensor.a.arguments()
-            if i is None and j is None:
-                rmap = _get_map(test.function_space(), kinfo.integral_type)
-                cmap = _get_map(trial.function_space(), kinfo.integral_type)
-                return op2.MatParloopArg(tensor.M, (rmap, cmap), lgmaps=lgmaps)
-            else:
-                assert i is not None and j is not None
-                rmap = _get_map(test.function_space()[i], kinfo.integral_type)
-                cmap = _get_map(trial.function_space()[j], kinfo.integral_type)
-                return op2.MatParloopArg(tensor.M[i, j], (rmap, cmap), lgmaps=lgmaps)
-        else:
-            raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
-
-
-    # Icky generator so we can access the correct coefficients in order
-    def coeffs():
-        for n, split_map in kinfo.coefficient_map:
-            c = form.coefficients()[n]
-            split_c = c.split()
-            for c_ in (split_c[i] for i in split_map):
-                yield c_
-    coeffs_iterator = iter(coeffs())
-
-    mesh = _get_mesh(form, kinfo)
-
-    if kinfo.needs_cell_facets:
-        raise NotImplementedError("Need to fix in Slate")
-        assert integral_type == "cell"
-        extra_args.append(m.cell_to_facets(op2.READ))
-
-    if kinfo.pass_layer_arg:
-        raise NotImplementedError("Need to fix in Slate")
-        c = op2.Global(1, itspace.layers-2, dtype=numpy.dtype(numpy.int32))
-        o = c(op2.READ)
-        extra_args.append(o)
-
-    try:
-        op2.parloop(
-            wrapper_kernel,
-            iterset,
-            [as_pyop2_parloop_arg(arg) for arg in kinfo.tsfc_kernel_args]
-        )
-    except MapValueError:
-        raise RuntimeError("Integral measure does not match measure of all "
-                           "coefficients/arguments")
 
 
 def _get_map(func_space, integral_type):
