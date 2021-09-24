@@ -1,6 +1,7 @@
 import functools
 import operator
 from collections import OrderedDict, defaultdict, namedtuple
+from dataclasses import dataclass
 from enum import IntEnum, auto
 from itertools import chain
 
@@ -22,6 +23,219 @@ from pyop2.exceptions import MapValueError, SparsityFormatError
 __all__ = ("assemble",)
 
 
+#############################################################
+
+@dataclass(frozen=True)
+class LocalKernel:
+
+    # pyop2_kernel: op2.LocalKernel  # new name
+    pyop2_kernel: op2.Kernel
+
+
+class _LocalKernelBuilder:
+
+    def __init__(self, expr, *, diagonal=False, form_compiler_parameters=None):
+        self._expr = expr
+        self._diagonal = diagonal
+        self._form_compiler_parameters = form_compiler_parameters.copy() or {}
+
+    def build(self):
+        try:
+            topology, = set(d.topology for d in self._expr.ufl_domains())
+        except ValueError:
+            raise NotImplementedError("All integration domains must share a mesh topology")
+
+        # Ensure mesh is 'initialised' as we could have got here without building a
+        # function space (e.g. if integrating a constant).
+        for m in self._expr.ufl_domains():
+            m.init()
+
+        for o in chain(self._expr.arguments(), self._expr.coefficients()):
+            domain = o.ufl_domain()
+            if domain is not None and domain.topology != topology:
+                raise NotImplementedError("Assembly with multiple meshes is not supported")
+
+        if isinstance(self._expr, slate.TensorBase):
+            if self._diagonal:
+                raise NotImplementedError("Diagonal assembly with Slate is not supported")
+            tsfc_kernel = slac.compile_expression(
+                expr, tsfc_parameters=self._form_compiler_parameters
+            )
+        else:
+            tsfc_kernel = tsfc_interface.compile_form(
+                expr, "form", parameters=self._form_compiler_parameters, diagonal=self._diagonal
+            )
+
+        local_kernels = []
+        for ... in tsfc_kernel:
+            pyop2_kernel = tsfc_interface.as_pyop2_local_kernel(tsfc_kernel)
+
+            local_kernels.append(LocalKernel(pyop2_kernel))
+
+        return tuple(local_kernels)
+
+
+# TODO cache this
+def _make_local_kernel(expr, **kwargs):
+    return _LocalKernelBuilder(expr, **kwargs).build()
+
+#############################################################
+
+
+@dataclass(frozen=True)
+class WrapperKernel:
+
+    pyop2_kernel: op2.WrapperKernel
+
+
+# TODO different class for Slate (local + wrapper)
+class _WrapperKernelBuilder:
+
+    def __init__(
+        self,
+        expr,
+        *,
+        extruded=False,
+        constant_layers=False,
+        subset=False,
+        unroll=False,
+        **kwargs
+    ):
+        """TODO
+
+        .. note::
+
+            expr should work even if it is 'pure UFL'.
+
+        .. note::
+
+            Although extruded, constant_layers and subset can all be retrieved from expr,
+            they are not 'UFL-level' concepts and so are passed in separately.
+        """
+        if constant_layers and not extruded:
+            raise ValueError("constant_layers is only valid when extruded is True")
+
+        self._expr = expr
+        self._extruded = extruded
+        self._constant_layers = constant_layers
+        self._subset = subset
+        self._unroll = unroll
+        self._local_kernel_kwargs = kwargs or {}
+
+    def build(self):
+        local_kernels = _make_local_kernels(self._expr, **self._local_kernel_kwargs)
+
+        wrapper_kernels = []
+        for local_kernel in local_kernels:
+            ...
+            wrapper_kernels.append(wrapper_kernel)
+
+        return wrapper_kernels
+
+        for indices, kinfo in expr_kernels:
+            # kwargs for wrapper kernel
+            if assembly_rank == _AssemblyRank.MATRIX:
+                test, trial = expr.arguments()
+                Vrow = test.function_space()
+                Vcol = trial.function_space()
+                row, col = indices
+                if row is None and col is None:
+                    lgmaps, unroll = zip(*(_collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, i, j)
+                                           for i, j in numpy.ndindex(tensor.block_shape)))
+                    lgmaps = tuple(lgmaps)
+                    unroll = any(unroll)
+                else:
+                    assert row is not None and col is not None
+                    lgmaps, unroll = _collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, row, col)
+                    lgmaps = (lgmaps,)
+            else:
+                lgmaps = None
+                unroll=None
+
+            wrapper_kernel_args = [tsfc_interface.as_pyop2_wrapper_kernel_arg(arg, unroll=self._unroll)
+                                   for arg in kinfo.tsfc_kernel_args]
+
+            iteration_region = {
+                "exterior_facet_top": op2.ON_TOP,
+                "exterior_facet_bottom": op2.ON_BOTTOM,
+                "interior_facet_horiz": op2.ON_INTERIOR_FACETS
+            }.get(kinfo.integral_type, None)
+
+            pyop2_kernel = op2.WrapperKernel(
+                kinfo.kernel,
+                wrapper_kernel_args,
+                iteration_region=iteration_region,
+                pass_layer_arg=kinfo.pass_layer_arg,
+                extruded=self._extruded,
+                constant_layers=self._constant_layers,
+                subset=self._subset
+            )
+
+            return WrapperKernel(pyop2_kernel)  # + bits
+
+    def _as_wrapper_kernel_argument(self, tsfc_arg):
+        return _as_wrapper_kernel_argument(tsfc_arg, self)
+
+
+# TODO cache this
+def _make_wrapper_kernel(expr, unroll=False):
+    return _WrapperKernelBuilder(expr, unroll).build()
+
+
+# TODO make singledispatchmethod when Python 3.8
+@functools.singledispatch
+def _as_wrapper_kernel_argument(tsfc_arg, self):
+    raise NotImplementedError
+
+
+@_as_wrapper_kernel_argument.register(...)
+def _():
+    ...
+
+
+#############################################################
+
+
+class ParloopBuilder:
+
+    def __init__(self, expr, *, lgmaps=None, unroll=False):
+        """
+
+        .. note::
+
+            Here expr is a 'Firedrake-level' entity since we now recognise that data is
+            attached. This means that we cannot safely cache the resulting object.
+        """
+        self._expr = expr
+        self._lgmaps = lgmaps
+        self._unroll = unroll
+
+    def build(self):
+        # these will not work since per-loop iterset needed
+        iterset = _get_iterset(expr, kinfo, all_integer_subdomain_ids)
+        extruded = isinstance(iterset, op2.ExtrudedSet)
+        constant_layers = extruded and iterset.constant_layers
+        subset = isinstance(iterset, op2.Subset)
+
+        wrapper_kernels = _make_wrapper_kernels(
+            self._expr,
+            extruded=extruded,
+            constant_layers=constant_layers,
+            subset=subset,
+            unroll=unroll
+        )
+
+        # TODO create a tensor
+
+        for wrapper_kernel in wrapper_kernels:
+            # TODO parse args
+            op2.Parloop(wrapper_kernel, iterset, indices, kinfo, expr, tensor, lgmaps=lgmaps)
+
+
+
+
+#############################################################
+
 class _AssemblyRank(IntEnum):
     """Enum enumerating possible dimensions of the output tensor."""
     SCALAR = 0
@@ -36,7 +250,7 @@ class _AssemblyType(IntEnum):
     """
     SOLUTION = auto()
     RESIDUAL = auto()
-
+935 6093 9004
 
 _AssemblyOpts = namedtuple("_AssemblyOpts", ["diagonal",
                                              "assembly_type",
@@ -428,7 +642,7 @@ def _make_matrix(expr, bcs, opts):
                          options_prefix=opts.options_prefix)
 
 
-def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
+def _assemble_expr(expr, bcs, *, tensor=None, **kwargs):
     """Assemble an expression into the provided tensor.
 
     :arg expr: The expression to be assembled.
@@ -439,9 +653,7 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
     :arg opts: :class:`_AssemblyOpts` containing the assembly options.
     :arg assembly_rank: The appropriate :class:`_AssemblyRank`.
     """
-    # TODO Cache things properly
-    expr_kernels = _compile_expr(expr, opts.fc_params, opts.diagonal)
-
+    # TODO find another way
     # These will be used to correctly interpret the "otherwise" subdomain
     all_integer_subdomain_ids = defaultdict(list)
     for _, kinfo in expr_kernels:
@@ -450,13 +662,12 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
     for k, v in all_integer_subdomain_ids.items():
         all_integer_subdomain_ids[kinfo] = tuple(sorted(v))
 
+    # TODO find another way
+    # TODO bcs should not be seen at this level - move outwards.
+    # TODO bcs has structure - I don't want to hide that
+    if bcs:
+        raise NotImplementedError
     for indices, kinfo in expr_kernels:
-        iterset = _get_iterset(expr, kinfo, all_integer_subdomain_ids)
-        # kwargs for wrapper kernel
-        extruded = isinstance(iterset, op2.ExtrudedSet)
-        constant_layers = extruded and iterset.constant_layers
-        subset = isinstance(iterset, op2.Subset)
-
         if assembly_rank == _AssemblyRank.MATRIX:
             test, trial = expr.arguments()
             Vrow = test.function_space()
@@ -465,37 +676,36 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
             if row is None and col is None:
                 lgmaps, unroll = zip(*(_collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, i, j)
                                        for i, j in numpy.ndindex(tensor.block_shape)))
-                lgmaps = tuple(lgmaps)
                 unroll = any(unroll)
             else:
                 assert row is not None and col is not None
-                lgmaps, unroll = _collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, row, col)
-                lgmaps = (lgmaps,)
+                unroll = _collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, row, col)
         else:
             lgmaps = None
-            unroll=None
+            unroll = False
 
-        wrapper_kernel_args = [tsfc_interface.as_pyop2_wrapper_kernel_arg(arg, unroll=unroll)
-                               for arg in kinfo.tsfc_kernel_args]
 
-        iteration_region = {
-            "exterior_facet_top": op2.ON_TOP,
-            "exterior_facet_bottom": op2.ON_BOTTOM,
-            "interior_facet_horiz": op2.ON_INTERIOR_FACETS
-        }.get(kinfo.integral_type, None)
-
-        wrapper_kernel = op2.WrapperKernel(
-            kinfo.kernel,
-            wrapper_kernel_args,
-            iteration_region=iteration_region,
-            pass_layer_arg=kinfo.pass_layer_arg,
-            extruded=extruded,
-            constant_layers=constant_layers,
-            subset=subset
-        )
-        _do_parloop(wrapper_kernel, iterset, indices, kinfo, expr, tensor, all_integer_subdomain_ids, lgmaps=lgmaps)
-
+    tensor = _do_parloops(
+        expr,
+        **kwargs
+        # TODO pass tensor arg
+    )
     _apply_bcs(bcs, tensor, opts, assembly_rank)
+
+
+def needs_unrolling(bcs, Vrow, Vcol, row, col):
+    """TODO"""
+    if len(Vrow) > 1:
+        rbcs = tuple(bc for bc in bcs if bc.function_space_index() == row)
+    else:
+        rbcs = bcs
+
+    if len(Vcol) > 1:
+        cbcs = tuple(bc for bc in bcs if bc.function_space_index() == col
+                     and isinstance(bc, DirichletBC))
+    else:
+        cbcs = tuple(bc for bc in bcs if isinstance(bc, DirichletBC))
+
 
 
 def _apply_bcs(bcs, tensor, opts, assembly_rank):
@@ -569,7 +779,7 @@ def _collect_lgmaps(matrix, all_bcs, Vrow, Vcol, row, col):
     rlgmap = Vrow[row].local_to_global_map(bcrow, lgmap=rlgmap)
     clgmap = Vcol[col].local_to_global_map(bccol, lgmap=clgmap)
     unroll = any(bc.function_space().component is not None
-                 for bc in chain(bcrow, bccol))
+                 for bc in chain(rbcs, cbcs))
     return (rlgmap, clgmap), unroll
 
 
@@ -626,38 +836,7 @@ def _apply_dirichlet_bcs(tensor, bcs, opts, assembly_rank):
         raise AssertionError
 
 
-def _compile_expr(expr, fc_params=None, diagonal=False):
-    """TODO"""
-    fc_params = fc_params.copy() if fc_params else {}
-
-    try:
-        topology, = set(d.topology for d in expr.ufl_domains())
-    except ValueError:
-        raise NotImplementedError("All integration domains must share a mesh topology")
-    for m in expr.ufl_domains():
-        # Ensure mesh is "initialised" (could have got here without
-        # building a functionspace (e.g. if integrating a constant)).
-        m.init()
-
-    for o in chain(expr.arguments(), expr.coefficients()):
-        domain = o.ufl_domain()
-        if domain is not None and domain.topology != topology:
-            raise NotImplementedError("Assembly with multiple meshes not supported.")
-
-    coefficients = expr.coefficients()
-    domains = expr.ufl_domains()
-
-    if isinstance(expr, slate.TensorBase):
-        if diagonal:
-            raise NotImplementedError("Diagonal + slate not supported")
-        return slac.compile_expression(expr, tsfc_parameters=fc_params)
-    else:
-        return tsfc_interface.compile_form(
-            expr, "form", parameters=fc_params, diagonal=diagonal
-        )
-
-
-def _do_parloop(wrapper_kernel, iterset, indices, kinfo, form, tensor, all_integer_subdomain_ids, lgmaps=None):
+def _do_parloop(wrapper_kernel, iterset, indices, kinfo, form, tensor, lgmaps=None):
     """TODO"""
 
     @functools.singledispatch
