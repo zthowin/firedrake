@@ -4,6 +4,7 @@ from collections import OrderedDict, defaultdict, namedtuple
 from dataclasses import dataclass
 from enum import IntEnum, auto
 from itertools import chain
+import typing
 
 import firedrake
 import numpy
@@ -13,6 +14,7 @@ from firedrake import (assemble_expressions, matrix, parameters, solving,
                        tsfc_interface, utils)
 from firedrake.adjoint import annotate_assemble
 from firedrake.bcs import DirichletBC, EquationBC, EquationBCSplit
+from firedrake.formmanipulation import split_form
 from firedrake.petsc import PETSc
 from firedrake.slate import slac, slate
 from firedrake.utils import ScalarType
@@ -28,8 +30,7 @@ __all__ = ("assemble",)
 @dataclass(frozen=True)
 class LocalKernel:
 
-    pyop2_kernel: op2.Kernel
-    tsfc_args: list
+    tsfc_kernel: tsfc_interface.SplitKernel
 
 
 class _LocalKernelBuilder:
@@ -37,7 +38,7 @@ class _LocalKernelBuilder:
     def __init__(self, expr, *, diagonal=False, form_compiler_parameters=None):
         self._expr = expr
         self._diagonal = diagonal
-        self._form_compiler_parameters = form_compiler_parameters.copy() or {}
+        self._form_compiler_parameters = form_compiler_parameters or {}
 
     def build(self):
         try:
@@ -58,25 +59,22 @@ class _LocalKernelBuilder:
         if isinstance(self._expr, slate.TensorBase):
             if self._diagonal:
                 raise NotImplementedError("Diagonal assembly with Slate is not supported")
-            tsfc_kernel = slac.compile_expression(
-                expr, tsfc_parameters=self._form_compiler_parameters
+            tsfc_kernels = slac.compile_expression(
+                self._expr, tsfc_parameters=self._form_compiler_parameters
             )
         else:
-            tsfc_kernel = tsfc_interface.compile_form(
-                expr, "form", parameters=self._form_compiler_parameters, diagonal=self._diagonal
+            tsfc_kernels = tsfc_interface.compile_form(
+                self._expr, "form", parameters=self._form_compiler_parameters, diagonal=self._diagonal
             )
 
         local_kernels = []
-        for ... in tsfc_kernel:
-            pyop2_kernel = tsfc_interface.as_pyop2_local_kernel(tsfc_kernel)
-
-            local_kernels.append(LocalKernel(pyop2_kernel))
-
+        for tsfc_kernel in tsfc_kernels:
+            local_kernels.append(LocalKernel(tsfc_kernel))
         return tuple(local_kernels)
 
 
 # TODO cache this
-def _make_local_kernel(expr, **kwargs):
+def _make_local_kernels(expr, **kwargs):
     return _LocalKernelBuilder(expr, **kwargs).build()
 
 #############################################################
@@ -90,7 +88,7 @@ class WrapperKernel:
 
     @property
     def tsfc_args(self):
-        return self.local_kernel.tsfc_args
+        return self.tsfc_kernel.kinfo.tsfc_kernel_args
 
     @property
     def tsfc_kernel(self):
@@ -111,7 +109,7 @@ class WrapperKernelData:
     unroll: bool = False
 
     def __post_init__(self):
-        if constant_layers and not extruded:
+        if self.constant_layers and not self.extruded:
             raise ValueError("constant_layers is only valid when extruded is True")
 
 
@@ -134,6 +132,8 @@ class _WrapperKernelBuilder:
 
         wrapper_kernels = []
         for local_kernel, kernel_data in zip(local_kernels, self._kernel_data):
+            kinfo = local_kernel.tsfc_kernel.kinfo
+
             wrapper_kernel_args = [
                 tsfc_interface.as_pyop2_wrapper_kernel_arg(arg, unroll=kernel_data.unroll)
                 for arg in kinfo.tsfc_kernel_args
@@ -143,7 +143,7 @@ class _WrapperKernelBuilder:
                 "exterior_facet_top": op2.ON_TOP,
                 "exterior_facet_bottom": op2.ON_BOTTOM,
                 "interior_facet_horiz": op2.ON_INTERIOR_FACETS
-            }.get(kinfo.integral_type, None)
+            }.get(local_kernel.tsfc_kernel.kinfo.integral_type, None)
 
             pyop2_kernel = op2.WrapperKernel(
                 kinfo.kernel,
@@ -155,7 +155,7 @@ class _WrapperKernelBuilder:
                 subset=kernel_data.subset
             )
 
-            wrapper_kernel = WrapperKernel(pyop2_kernel)  # + bits
+            wrapper_kernel = WrapperKernel(pyop2_kernel, local_kernel)
             wrapper_kernels.append(wrapper_kernel)
 
         return wrapper_kernels
@@ -165,19 +165,8 @@ class _WrapperKernelBuilder:
 
 
 # TODO cache this
-def _make_wrapper_kernel(expr, unroll=False):
-    return _WrapperKernelBuilder(expr, unroll).build()
-
-
-# TODO make singledispatchmethod when Python 3.8
-@functools.singledispatch
-def _as_wrapper_kernel_argument(tsfc_arg, self):
-    raise NotImplementedError
-
-
-@_as_wrapper_kernel_argument.register(...)
-def _():
-    ...
+def _make_wrapper_kernels(*args, **kwargs):
+    return _WrapperKernelBuilder(*args, **kwargs).build()
 
 
 #############################################################
@@ -193,7 +182,7 @@ class ParloopData:
 
 class ParloopExecutor:
 
-    def __init__(self, expr, tensor, parloop_data, *, **kwargs):
+    def __init__(self, expr, tensor, parloop_data, *, diagonal=False, **kwargs):
         """
 
         .. note::
@@ -204,15 +193,26 @@ class ParloopExecutor:
         self._expr = expr
         self._parloop_data = parloop_data
         self._tensor = tensor
+        self._diagonal = diagonal
         self._wrapper_kernel_kwargs = kwargs
 
     def run(self):
-        wrapper_kernel_data = []
+        # TODO find another way
+        # These will be used to correctly interpret the "otherwise" subdomain
+        all_integer_subdomain_ids = defaultdict(list)
+        for _, subexpr in split_form(self._expr, diagonal=self._diagonal):
+            for integral in subexpr.integrals():
+                if integral.subdomain_id() != "otherwise":
+                    all_integer_subdomain_ids[integral.integral_type()].append(integral.subdomain_id())
 
-        for integral, parloop_data in zip(self._expr.integrals(), self._parloop_data):
+        for k, v in all_integer_subdomain_ids.items():
+            all_integer_subdomain_ids[k] = tuple(sorted(v))
+
+        wrapper_kernel_data = []
+        integrals = chain(*[subexpr.integrals() for _, subexpr in split_form(self._expr, diagonal=self._diagonal)])
+        for integral, parloop_data in zip(integrals, self._parloop_data):
+            iterset = _get_iterset(self._expr, integral, all_integer_subdomain_ids)
             # since we are at 'Firedrake-level' we can inspect Firedrake objects
-            breakpoint()  # TODO get the following from the Firedrake function space
-            raise NotImplementedError
             extruded = isinstance(iterset, op2.ExtrudedSet)
             constant_layers = extruded and iterset.constant_layers
             subset = isinstance(iterset, op2.Subset)
@@ -221,42 +221,36 @@ class ParloopExecutor:
 
         wrapper_kernels = _make_wrapper_kernels(
             self._expr,
-            wrapper_kernel_data
+            wrapper_kernel_data,
+            diagonal=self._diagonal,
+            **self._wrapper_kernel_kwargs
         )
 
-        # Icky generator so we can access the correct coefficients in order
-        def coeffs():
-            for n, split_map in kinfo.coefficient_map:
-                c = form.coefficients()[n]
-                split_c = c.split()
-                for c_ in (split_c[i] for i in split_map):
-                    yield c_
-        self.coeffs_iterator = iter(coeffs())
 
-        if kinfo.needs_cell_facets:
-            raise NotImplementedError("Need to fix in Slate")
-            assert integral_type == "cell"
-            extra_args.append(m.cell_to_facets(op2.READ))
+        # if kinfo.needs_cell_facets:
+        #     raise NotImplementedError("Need to fix in Slate")
+        #     assert integral_type == "cell"
+        #     extra_args.append(m.cell_to_facets(op2.READ))
 
-        if kinfo.pass_layer_arg:
-            raise NotImplementedError("Need to fix in Slate")
-            c = op2.Global(1, itspace.layers-2, dtype=numpy.dtype(numpy.int32))
-            o = c(op2.READ)
-            extra_args.append(o)
+        # if kinfo.pass_layer_arg:
+        #     raise NotImplementedError("Need to fix in Slate")
+        #     c = op2.Global(1, itspace.layers-2, dtype=numpy.dtype(numpy.int32))
+        #     o = c(op2.READ)
+        #     extra_args.append(o)
 
-        # TODO find another way
-        # These will be used to correctly interpret the "otherwise" subdomain
-        all_integer_subdomain_ids = defaultdict(list)
-        for wrapper_kernel in wrapper_kernels:
-            kinfo = wrapper_kernel.kinfo
-            if kinfo.subdomain_id != "otherwise":
-                all_integer_subdomain_ids[kinfo.integral_type].append(kinfo.subdomain_id)
+        integrals = chain(*[subexpr.integrals() for _, subexpr in split_form(self._expr, diagonal=self._diagonal)])
+        for integral, wrapper_kernel in zip(integrals, wrapper_kernels):
+            # Icky generator so we can access the correct coefficients in order
+            kinfo = wrapper_kernel.tsfc_kernel.kinfo
+            def coeffs():
+                for n, split_map in kinfo.coefficient_map:
+                    c = self._expr.coefficients()[n]
+                    split_c = c.split()
+                    for c_ in (split_c[i] for i in split_map):
+                        yield c_
+            self.coeffs_iterator = iter(coeffs())
 
-        for k, v in all_integer_subdomain_ids.items():
-            all_integer_subdomain_ids[kinfo] = tuple(sorted(v))
-
-        for wrapper_kernel in wrapper_kernels:
-            iterset = _get_iterset(expr, wrapper_kernel.kinfo, all_integer_subdomain_ids)
+            iterset = _get_iterset(self._expr, integral, all_integer_subdomain_ids)
             parloop_args = [
                 _as_parloop_arg(tsfc_arg, self, wrapper_kernel)
                 for tsfc_arg in wrapper_kernel.tsfc_args
@@ -279,6 +273,7 @@ def _as_parloop_arg(tsfc_arg, self):
 
 @_as_parloop_arg.register(tsfc_utils.CoordinatesKernelArg)
 def _(tsfc_arg, self, wrapper_kernel):
+    kinfo = wrapper_kernel.tsfc_kernel.kinfo
     mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
     func = mesh.coordinates
     map_ = _get_map(func.function_space(), kinfo.integral_type)
@@ -286,6 +281,7 @@ def _(tsfc_arg, self, wrapper_kernel):
 
 @_as_parloop_arg.register(tsfc_utils.CellOrientationsKernelArg)
 def _(tsfc_arg, self, wrapper_kernel):
+    kinfo = wrapper_kernel.tsfc_kernel.kinfo
     mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
     func = mesh.cell_orientations()
     map_ = _get_map(func.function_space(), kinfo.integral_type)
@@ -293,6 +289,7 @@ def _(tsfc_arg, self, wrapper_kernel):
 
 @_as_parloop_arg.register(tsfc_utils.CellSizesKernelArg)
 def _(tsfc_arg, self, wrapper_kernel):
+    kinfo = wrapper_kernel.tsfc_kernel.kinfo
     mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
     func = mesh.cell_sizes
     map_ = _get_map(func.function_space(), kinfo.integral_type)
@@ -311,6 +308,8 @@ def _(tsfc_arg, self, wrapper_kernel):
 @_as_parloop_arg.register(tsfc_utils.ConstantKernelArg)
 @_as_parloop_arg.register(tsfc_utils.CoefficientKernelArg)
 def _(tsfc_arg, self, wrapper_kernel):
+    kinfo = wrapper_kernel.tsfc_kernel.kinfo
+
     coeff = next(self.coeffs_iterator)
     if tsfc_arg.rank == 0:
         return op2.GlobalParloopArg(coeff.dat)
@@ -321,6 +320,9 @@ def _(tsfc_arg, self, wrapper_kernel):
 
 @_as_parloop_arg.register(tsfc_utils.LocalTensorKernelArg)
 def _(tsfc_arg, self, wrapper_kernel):
+    indices = wrapper_kernel.tsfc_kernel.indices
+    tensor =self._tensor
+    kinfo = wrapper_kernel.tsfc_kernel.kinfo
     # TODO New types for Scalar/Vector/Matrix
     if tsfc_arg.rank == 0:
         return op2.GlobalParloopArg(tensor)
@@ -328,12 +330,12 @@ def _(tsfc_arg, self, wrapper_kernel):
         i, = indices
         if i is None:
             return op2.DatParloopArg(
-                tensor.dat, _get_map(tensor.function_space(), kinfo.integral_type)
+                self._tensor.dat, _get_map(self._tensor.function_space(), kinfo.integral_type)
             )
         else:
             return op2.DatParloopArg(
-                tensor.dat[i], 
-                _get_map(tensor.function_space()[i], kinfo.integral_type)
+                self._tensor.dat[i], 
+                _get_map(self._tensor.function_space()[i], kinfo.integral_type)
             )
     elif tsfc_arg.rank == 2:
         i, j = indices
@@ -376,7 +378,7 @@ class _AssemblyType(IntEnum):
     """
     SOLUTION = auto()
     RESIDUAL = auto()
-935 6093 9004
+
 
 _AssemblyOpts = namedtuple("_AssemblyOpts", ["diagonal",
                                              "assembly_type",
@@ -768,7 +770,8 @@ def _make_matrix(expr, bcs, opts):
                          options_prefix=opts.options_prefix)
 
 
-def _assemble_expr(expr, tensor, bcs, *, **kwargs):
+# def _assemble_expr(expr, tensor, bcs, **kwargs):
+def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
     """Assemble an expression into the provided tensor.
 
     :arg expr: The expression to be assembled.
@@ -784,7 +787,9 @@ def _assemble_expr(expr, tensor, bcs, *, **kwargs):
         raise NotImplementedError
 
     parloop_data = []
-    for indices, _ in expr_kernels:
+    coefficient_numbers = expr.coefficient_numbering()
+    from firedrake.formmanipulation import split_form
+    for indices, _ in split_form(expr, diagonal=opts.diagonal):  # split = True (see tsfc_interface.py)
         if assembly_rank == _AssemblyRank.MATRIX:
             test, trial = expr.arguments()
             Vrow = test.function_space()
@@ -807,7 +812,8 @@ def _assemble_expr(expr, tensor, bcs, *, **kwargs):
     if tensor is None:
         raise NotImplementedError
 
-    _execute_parloops(expr, tensor, parloop_data, **kwargs)
+    # _execute_parloops(expr, tensor, parloop_data, **kwargs)
+    _execute_parloops(expr, tensor, parloop_data)  # break apart opts and pass as kwargs
     _apply_bcs(bcs, tensor, opts, assembly_rank)
 
 
@@ -961,18 +967,18 @@ def _get_map(func_space, integral_type):
 
 
 def _get_mesh(expr, expr_kernel):
-    return expr.ufl_domains()[expr_kernel.domain_number]
+    return expr.ufl_domains()[expr_kernel.kinfo.domain_number]
 
 
-def _get_iterset(expr, expr_kernel, all_integer_subdomain_ids):
-    mesh = _get_mesh(expr, expr_kernel)
-    subdomain_data = expr.subdomain_data()[mesh].get(expr_kernel.integral_type, None)
+def _get_iterset(expr, integral, all_integer_subdomain_ids):
+    mesh = integral.ufl_domain()
+    subdomain_data = expr.subdomain_data()[mesh].get(integral.integral_type(), None)
     if subdomain_data is not None:
-        if expr_kernel.integral_type != "cell":
+        if integral.integral_type() != "cell":
             raise NotImplementedError("subdomain_data only supported with cell integrals")
-        if expr_kernel.subdomain_id not in ("otherwise", "everywhere"):
+        if integral.subdomain_id() not in ("otherwise", "everywhere"):
             raise ValueError("Cannot use subdomain data and subdomain_id")
         return subdomain_data
     else:
-        return mesh.measure_set(expr_kernel.integral_type, expr_kernel.subdomain_id,
+        return mesh.measure_set(integral.integral_type(), integral.subdomain_id(),
                                 all_integer_subdomain_ids)
