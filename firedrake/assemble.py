@@ -182,7 +182,7 @@ class ParloopData:
 
 class ParloopExecutor:
 
-    def __init__(self, expr, tensor, parloop_data, *, diagonal=False, **kwargs):
+    def __init__(self, expr, parloop_data, *, diagonal=False, tensor=None, **kwargs):
         """
 
         .. note::
@@ -239,7 +239,7 @@ class ParloopExecutor:
         #     extra_args.append(o)
 
         integrals = chain(*[subexpr.integrals() for _, subexpr in split_form(self._expr, diagonal=self._diagonal)])
-        for integral, wrapper_kernel in zip(integrals, wrapper_kernels):
+        for integral, wrapper_kernel, parloop_data in zip(integrals, wrapper_kernels, self._parloop_data):
             # Icky generator so we can access the correct coefficients in order
             kinfo = wrapper_kernel.tsfc_kernel.kinfo
             def coeffs():
@@ -252,7 +252,7 @@ class ParloopExecutor:
 
             iterset = _get_iterset(self._expr, integral, all_integer_subdomain_ids)
             parloop_args = [
-                _as_parloop_arg(tsfc_arg, self, wrapper_kernel)
+                _as_parloop_arg(tsfc_arg, self, wrapper_kernel, parloop_data)
                 for tsfc_arg in wrapper_kernel.tsfc_args
             ]
             try:
@@ -264,7 +264,7 @@ class ParloopExecutor:
 
 # TODO Make into a singledispatchmethod when we have Python 3.8
 @functools.singledispatch
-def _as_parloop_arg(tsfc_arg, self):
+def _as_parloop_arg(tsfc_arg, self, wrapper_kernel, parloop_data):
     """Return a :class:`op2.ParloopArg` corresponding to the provided
     :class:`tsfc.KernelArg`.
     """
@@ -272,7 +272,7 @@ def _as_parloop_arg(tsfc_arg, self):
 
 
 @_as_parloop_arg.register(tsfc_utils.CoordinatesKernelArg)
-def _(tsfc_arg, self, wrapper_kernel):
+def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
     mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
     func = mesh.coordinates
@@ -280,7 +280,7 @@ def _(tsfc_arg, self, wrapper_kernel):
     return op2.DatParloopArg(func.dat, map_)
 
 @_as_parloop_arg.register(tsfc_utils.CellOrientationsKernelArg)
-def _(tsfc_arg, self, wrapper_kernel):
+def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
     mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
     func = mesh.cell_orientations()
@@ -288,7 +288,7 @@ def _(tsfc_arg, self, wrapper_kernel):
     return op2.DatParloopArg(func.dat, map_)
 
 @_as_parloop_arg.register(tsfc_utils.CellSizesKernelArg)
-def _(tsfc_arg, self, wrapper_kernel):
+def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
     mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
     func = mesh.cell_sizes
@@ -296,18 +296,18 @@ def _(tsfc_arg, self, wrapper_kernel):
     return op2.DatParloopArg(func.dat, map_)
 
 @_as_parloop_arg.register(tsfc_utils.ExteriorFacetKernelArg)
-def _(tsfc_arg, self, wrapper_kernel):
+def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
     return op2.DatParloopArg(mesh.exterior_facets.local_facet_dat)
 
 @_as_parloop_arg.register(tsfc_utils.InteriorFacetKernelArg)
-def _(tsfc_arg, self, wrapper_kernel):
+def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
     return op2.DatParloopArg(mesh.interior_facets.local_facet_dat)
 
 @_as_parloop_arg.register(tsfc_utils.ConstantKernelArg)
 @_as_parloop_arg.register(tsfc_utils.CoefficientKernelArg)
-def _(tsfc_arg, self, wrapper_kernel):
+def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
 
     coeff = next(self.coeffs_iterator)
@@ -319,7 +319,7 @@ def _(tsfc_arg, self, wrapper_kernel):
         raise AssertionError("TODO")
 
 @_as_parloop_arg.register(tsfc_utils.LocalTensorKernelArg)
-def _(tsfc_arg, self, wrapper_kernel):
+def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     indices = wrapper_kernel.tsfc_kernel.indices
     tensor =self._tensor
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
@@ -343,12 +343,12 @@ def _(tsfc_arg, self, wrapper_kernel):
         if i is None and j is None:
             rmap = _get_map(test.function_space(), kinfo.integral_type)
             cmap = _get_map(trial.function_space(), kinfo.integral_type)
-            return op2.MatParloopArg(tensor.M, (rmap, cmap), lgmaps=lgmaps)
+            return op2.MatParloopArg(tensor.M, (rmap, cmap), lgmaps=tuple(parloop_data.lgmaps))
         else:
             assert i is not None and j is not None
             rmap = _get_map(test.function_space()[i], kinfo.integral_type)
             cmap = _get_map(trial.function_space()[j], kinfo.integral_type)
-            return op2.MatParloopArg(tensor.M[i, j], (rmap, cmap), lgmaps=lgmaps)
+            return op2.MatParloopArg(tensor.M[i, j], (rmap, cmap), lgmaps=(parloop_data.lgmaps,))
     else:
         raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
 
@@ -782,10 +782,6 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
     :arg opts: :class:`_AssemblyOpts` containing the assembly options.
     :arg assembly_rank: The appropriate :class:`_AssemblyRank`.
     """
-    # TODO bcs has structure - I don't want to hide that
-    if bcs:
-        raise NotImplementedError
-
     parloop_data = []
     coefficient_numbers = expr.coefficient_numbering()
     from firedrake.formmanipulation import split_form
@@ -796,12 +792,12 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
             Vcol = trial.function_space()
             row, col = indices
             if row is None and col is None:
-                lgmaps, unroll = zip(*(_collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, i, j)
+                lgmaps, unroll = zip(*(_collect_lgmaps(tensor, bcs, Vrow, Vcol, i, j)
                                        for i, j in numpy.ndindex(tensor.block_shape)))
                 unroll = any(unroll)
             else:
                 assert row is not None and col is not None
-                unroll = _collect_lgmaps(tensor, tuple(chain(bcs)), Vrow, Vcol, row, col)
+                lgmaps, unroll = _collect_lgmaps(tensor, bcs, Vrow, Vcol, row, col)
         else:
             lgmaps = None
             unroll = False
@@ -813,7 +809,7 @@ def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
         raise NotImplementedError
 
     # _execute_parloops(expr, tensor, parloop_data, **kwargs)
-    _execute_parloops(expr, tensor, parloop_data)  # break apart opts and pass as kwargs
+    _execute_parloops(expr, parloop_data, tensor=tensor, diagonal=opts.diagonal)
     _apply_bcs(bcs, tensor, opts, assembly_rank)
 
 
@@ -889,7 +885,7 @@ def _collect_lgmaps(matrix, all_bcs, Vrow, Vcol, row, col):
     rlgmap = Vrow[row].local_to_global_map(bcrow, lgmap=rlgmap)
     clgmap = Vcol[col].local_to_global_map(bccol, lgmap=clgmap)
     unroll = any(bc.function_space().component is not None
-                 for bc in chain(rbcs, cbcs))
+                 for bc in chain(bcrow, bccol))
     return (rlgmap, clgmap), unroll
 
 
