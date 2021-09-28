@@ -360,80 +360,63 @@ def _execute_parloops(*args, **kwargs):
     ParloopExecutor(*args, **kwargs).run()
 
 
-class _Assembler(abc.ABC):
+class _FormAssembler(abc.ABC):
 
-    def __init__(self, tensor):
-        if tensor:
-            self.check_tensor(tensor)
-        else:
-            tensor = self.make_tensor(...)
-        self.tensor = tensor
-
-    @abc.abstractproperty
-    def tensor(self):
-        ...
-
-    @abc.abstractproperty
-    def return_val(self):
-        ...
-
-    @abc.abstractmethod
-    def prepare_tensor(self):
-        ...
-
-    @abc.abstractmethod
-    def assemble(self):
-        self.check_tensor()
-        parloops()
-        # _execute_parloops(expr, tensor, parloop_data, **kwargs)
-        _execute_parloops(expr, parloop_data, tensor=tensor, diagonal=opts.diagonal, **kwargs)
-        _apply_bcs(bcs, tensor, opts, assembly_rank)
-
-        # return the right thing
-        return _prepare_return_value(...)
-
-    def parloops(self):
-        parloop_data = []
-        coefficient_numbers = expr.coefficient_numbering()
-        from firedrake.formmanipulation import split_form
-        for indices, _ in split_form(expr, diagonal=opts.diagonal):  # split = True (see tsfc_interface.py)
-            if assembly_rank == _AssemblyRank.MATRIX:
-                test, trial = expr.arguments()
-                Vrow = test.function_space()
-                Vcol = trial.function_space()
-                row, col = indices
-                if row is None and col is None:
-                    lgmaps, unroll = zip(*(_collect_lgmaps(tensor, bcs, Vrow, Vcol, i, j)
-                                           for i, j in numpy.ndindex(tensor.block_shape)))
-                    unroll = any(unroll)
-                else:
-                    assert row is not None and col is not None
-                    lgmaps, unroll = _collect_lgmaps(tensor, bcs, Vrow, Vcol, row, col)
-            else:
-                lgmaps = None
-                unroll = False
-
-            parloop_data.append(ParloopData(lgmaps, unroll))
-
-
-
-class _ScalarAssembler(_Assembler):
-
-    def __init__(self):
-        ...
-
-    @functools.cachedproperty
-    def tensor(self):
-        return op2.Global(1, [0.0], dtype=utils.ScalarType)
+    def __init__(self, *, form_compiler_parameters=None):
+        self._form_compiler_parameters = form_compiler_parameters
 
     @property
-    def return_val(self):
+    def form_compiler_parameters(self):
+        return self._form_compiler_parameters
+
+    @abc.abstractproperty
+    def result(self):
+        ...
+
+    @abc.abstractmethod
+    def assemble(self, *args):
+        ...
+
+
+
+class _ZeroFormAssembler(_FormAssembler):
+
+    def __init__(self, expr, **kwargs)
+        super().__init__(**kwargs)
+
+        if len(expr.arguments()) != 0:
+            raise ValueError("Cannot assemble a 0-form with arguments")
+
+        self._expr = expr
+        self._tensor = op2.Global(1, [0.0], dtype=utils.ScalarType)
+
+    @property
+    def result(self):
         return self._tensor.data[0]
 
+    def assemble(self):
+        _execute_parloops(
+            self._expr,
+            [ParloopData() for _ in split_form(self._expr)],
+            tensor=self._tensor,
+            form_compiler_parameters=self.form_compiler_parameters
+        )
 
-class _VectorAssembler(_Assembler):
 
-    def __init__(self, expr, *, diagonal=False):
+class _OneFormAssembler(_FormAssembler):
+
+    def __init__(
+        self,
+        expr,
+        tensor=None,
+        bcs=None,
+        *,
+        diagonal=False,
+        assembly_type=AssemblyType.SOLUTION,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+
         if diagonal:
             test, trial = expr.arguments()
             if test.function_space() != trial.function_space():
@@ -446,56 +429,169 @@ class _VectorAssembler(_Assembler):
             if test.function_space() != tensor.function_space():
                 raise ValueError("Form's argument does not match provided result tensor")
             tensor.dat.zero()
+        else:
+            tensor = firedrake.Function(test.function_space())
+        self._tensor = tensor
 
         self._expr = expr
         self._diagonal = diagonal
-        self._tensor = tensor or firedrake.Function(test.function_space())
-
-    def assemble(self):
-        ...
-
-        return self._tensor
 
     @property
-    def return_val(self):
+    def result(self):
         return self.tensor
 
+    def assemble(self, expr=None, bcs=None):
+        expr = self._expr if not expr
+        bcs = self._bcs if not bcs
 
-class _MatrixAssembler(_Assembler):
+        parloop_data = [ParloopData() for _ in split_form(expr)]
+        _execute_parloops(expr, parloop_data, tensor=tensor)
 
-    def __init__(self, expr):
-        self._expr = expr
+        # Might have gotten here without EquationBC objects preprocessed
+        if any(isinstance(bc, EquationBC) for bc in bcs):
+            bcs = tuple(bc.extract_form("F") for bc in bcs)
 
-    @staticmethod
-    def check_tensor(expr, tensor):
+        eq_bcs = tuple(bc for bc in bcs if isinstance(bc, EquationBCSplit))
+        if eq_bcs and opts.diagonal:
+            raise NotImplementedError("Diagonal assembly and EquationBC not supported")
+
+        for bc in solving._extract_bcs(bcs):
+            self._apply_bc(bc) 
+
+    def _apply_bc(self, bc):
+        # TODO Maybe this could be a singledispatchmethod?
+        if isinstance(bc, DirichletBC):
+            self._apply_dirichlet_bc(bc)
+        elif isinstance(bc, EquationBCSplit):
+            bc.zero(self._tensor)
+            self.assemble(bc.f, bc.bcs)
+        else:
+            raise AssertionError
+
+    def _apply_dirichlet_bc(self, bc):
+        if self._assembly_type == AssemblyType.SOLUTION:
+            if self._diagonal:
+                bc.set(self._tensor, 1)
+            else:
+                bc.apply(self._tensor)
+        elif self._assembly_type == AssemblyType.RESIDUAL:
+            bc.zero(self._tensor)
+        else:
+            raise AssertionError
+
+
+class _TwoFormAssembler(_FormAssembler):
+
+    def __init__(
+        self,
+        expr,
+        tensor=None,
+        *,
+        mat_type=None,
+        sub_mat_type=None,
+        appctx=None,
+        form_compiler_parameters=None,
+        options_prefix=None,
+    ):
+        super().__init__(form_compiler_parameters=form_compiler_parameters)
+
         if expr.arguments() != tensor.a.arguments():
             raise ValueError("Form's arguments do not match provided result tensor")
 
+        mat_type, sub_mat_type = _get_mat_type(mat_type, sub_mat_type, expr.arguments())
+
+        self._mat_type = mat_type
+        self._sub_mat_type = sub_mat_type
+        self._appctx = appctx or {}
+        self._options_prefix = options_prefix
+
+        if tensor:
+            if mat_type != "matfree":
+                tensor.M.zero()
+            if matrix.a.arguments() != expr.arguments():
+                raise ValueError("Form's arguments do not match provided result tensor")
+        else:
+            tensor = allocate_matrix(
+                expr, bcs,
+                form_compiler_parameters=form_compiler_parameters
+            )
+        self._tensor = tensor
+
+
     @property
-    def return_val(self):
-        self.tensor.M.assemble()
-        return self.tensor
+    def result(self):
+        if self._mat_type == "matfree":
+            self._tensor.assemble()
+        else:
+            self._tensor.M.assemble()
+        return self._tensor
 
+    def assemble(self, expr=None, bcs=None):
+        if self._mat_type == "matfree":
+            return
 
-class _MatrixFreeAssembler(_Assembler):
+        expr = self._expr if not expr
+        bcs = self._bcs if not bcs
 
-    def __init__(self, appctx):
-        self._appctx = appctx
+        parloop_data = []
+        for indices, _ in split_form(expr):
+            test, trial = self._expr.arguments()
+            Vrow = test.function_space()
+            Vcol = trial.function_space()
+            row, col = indices
+            if row is None and col is None:
+                lgmaps, unroll = zip(*(_collect_lgmaps(self._tensor, self._bcs, Vrow, Vcol, i, j)
+                                       for i, j in numpy.ndindex(self._tensor.block_shape)))
+                unroll = any(unroll)
+            else:
+                assert row is not None and col is not None
+                lgmaps, unroll = _collect_lgmaps(self._tensor, self._bcs, Vrow, Vcol, row, col)
 
-    @property
-    def return_val(self):
-        self.tensor.assemble()
-        return self.tensor
+            parloop_data.append(ParloopData(lgmaps, unroll))
+        _execute_parloops(expr, parloop_data, tensor=self._tensor)
+
+        for bc in solving._extract_bcs(bcs):
+            self._apply_bc(bc)
+
+    def _apply_bc(self, bc):
+        if isinstance(bc, DirichletBC):
+            self._apply_dirichlet_bc(bc)
+        elif isinstance(bc, EquationBCSplit):
+            self.assemble(bc.f, bc.bcs)
+        else:
+            raise AssertionError
+
+    def _apply_dirichlet_bc(self, bc):
+        op2tensor = self._tensor.M
+        shape = tuple(len(a.function_space()) for a in self._tensor.a.arguments())
+
+        V = bc.function_space()
+        nodes = bc.nodes
+        for i, j in numpy.ndindex(shape):
+            # Set diagonal entries on bc nodes to 1 if the current
+            # block is on the matrix diagonal and its index matches the
+            # index of the function space the bc is defined on.
+            if i != j:
+                continue
+            if V.component is None and V.index is not None:
+                # Mixed, index (no ComponentFunctionSpace)
+                if V.index == i:
+                    op2tensor[i, j].set_local_diagonal_entries(nodes)
+            elif V.component is not None:
+                # ComponentFunctionSpace, check parent index
+                if V.parent.index is not None:
+                    # Mixed, index doesn't match
+                    if V.parent.index != i:
+                        continue
+                    # Index matches
+                op2tensor[i, j].set_local_diagonal_entries(nodes, idx=V.component)
+            elif V.index is None:
+                op2tensor[i, j].set_local_diagonal_entries(nodes)
+            else:
+                raise RuntimeError("Unhandled BC case")
 
 
 #############################################################
-
-class _AssemblyRank(IntEnum):
-    """Enum enumerating possible dimensions of the output tensor."""
-    SCALAR = 0
-    VECTOR = 1
-    MATRIX = 2
-
 
 class AssemblyType(IntEnum):
     """Enum enumerating possible assembly types.
@@ -506,29 +602,9 @@ class AssemblyType(IntEnum):
     RESIDUAL = auto()
 
 
-_AssemblyOpts = namedtuple("_AssemblyOpts", ["diagonal",
-                                             "assembly_type",
-                                             "fc_params",
-                                             "mat_type",
-                                             "sub_mat_type",
-                                             "appctx",
-                                             "options_prefix"])
-"""Container to hold immutable assembly options.
-
-Please refer to :func:`assemble` for a description of the options.
-"""
-
-
 @PETSc.Log.EventDecorator()
 @annotate_assemble
-def assemble(expr, *args, *,
-             diagonal=False,
-             assembly_type=AssemblyType.SOLUTION,
-             form_compiler_parameters=None,
-             mat_type=None,
-             sub_mat_type=None,
-             appctx={},
-             options_prefix=None):
+def assemble(expr, *args, **kwargs):
     r"""Evaluate expr.
 
     :arg expr: a :class:`~ufl.classes.Form`, :class:`~ufl.classes.Expr` or
@@ -596,24 +672,14 @@ def assemble(expr, *args, *,
     # we would define a shared interface for the two to follow. Otherwise I feel like
     # having assemble_form and assemble_slate as separate functions would be desirable.
     if isinstance(expr, (ufl.form.Form, slate.TensorBase)):
-        return assemble_form(expr, *args, **kwargs)
+        return _assemble_form(expr, *args, **kwargs)
     elif isinstance(expr, ufl.core.expr.Expr):
         return assemble_expressions.assemble_expression(expr)
     else:
         raise TypeError(f"Unable to assemble: {expr}")
 
 
-def _assemble_form(expr,
-                   tensor=None,
-                   bcs=None,
-                   *,
-                   assembly_type=AssemblyType.SOLUTION,
-                   diagonal=False,
-                   mat_type=None,
-                   sub_mat_type=None,
-                   appctx={},
-                   options_prefix=None,
-                   **kwargs):
+def _assemble_form(expr, *args, *, diagonal=False, **kwargs):
     """Assemble an expression.
 
     :arg expr: a :class:`~ufl.classes.Form` or a :class:`~slate.TensorBase`
@@ -622,100 +688,40 @@ def _assemble_form(expr,
     See :func:`assemble` for a description of the possible additional arguments
     and return values.
     """
-    # Do some setup of the arguments and wrap them in a namedtuple.
-    bcs = solving._extract_bcs(bcs)
-    mat_type, sub_mat_type = _get_mat_type(mat_type, sub_mat_type,
-                                           expr.arguments())
-
-    # Might have gotten here without EquationBC objects preprocessed
-    if any(isinstance(bc, EquationBC) for bc in bcs):
-        bcs = tuple(bc.extract_form("F") for bc in bcs)
-
-    if len(expr.arguments()) == 0 and tensor:
-        raise ValueError("Cannot assemble 0-form into existing tensor")
-
-    assembly_rank = _get_assembly_rank(expr, diagonal)
-
-    if assembly_rank == _AssemblyRank.SCALAR:
-        return _ScalarAssembler().assemble()
-    elif assembly_rank == _AssemblyRank.VECTOR:
-        return _VectorAssembler().assemble()
-    elif assembly_rank == _AssemblyRank.MATRIX:
-        if mat_type == "matfree":
-            return _MatrixFreeAssembler().assemble()
-        else:
-            return _MatrixAssembler().assemble()
+    rank = len(expr.arguments())
+    if rank == 0:
+        assembler = _ScalarAssembler(expr, *args, **kwargs)
+    elif rank == 1 or (rank == 2 and diagonal):
+        assembler = _VectorAssembler(expr, *args, diagonal=diagonal, **kwargs)
+    elif rank == 2:
+        assembler = _MatrixAssembler(expr, *args, **kwargs)
     else:
         raise AssertionError
 
-
-
+    assembler.assemble()
+    return assembler.result  # needed because of final communication
 
 
 @PETSc.Log.EventDecorator()
-def allocate_matrix(expr, bcs=(), form_compiler_parameters=None,
-                    mat_type=None, sub_mat_type=None, appctx={},
-                    options_prefix=None):
+def allocate_matrix(
+    expr,
+    bcs=None,
+    *,
+    mat_type=None,
+    sub_mat_type=None,
+    appctx=None,
+    form_compiler_parameters=None,
+    options_prefix=None
+):
     r"""Allocate a matrix given an expression.
 
     .. warning::
 
        Do not use this function unless you know what you're doing.
     """
-    opts = _AssemblyOpts(diagonal=False,
-                         assembly_type=None,
-                         fc_params=form_compiler_parameters,
-                         mat_type=mat_type,
-                         sub_mat_type=sub_mat_type,
-                         appctx=appctx,
-                         options_prefix=options_prefix)
-    return _make_matrix(expr, bcs, opts)
+    bcs = bcs or ()
+    appctx = appctx or {}
 
-
-@PETSc.Log.EventDecorator()
-def create_assembly_callable(expr, tensor=None, bcs=None, form_compiler_parameters=None,
-                             mat_type=None, sub_mat_type=None, diagonal=False):
-    r"""Create a callable object than be used to assemble expr into a tensor.
-
-    This is really only designed to be used inside residual and
-    jacobian callbacks, since it always assembles back into the
-    initially provided tensor.  See also :func:`allocate_matrix`.
-
-    .. warning::
-
-        This function is now deprecated.
-
-    .. warning::
-
-       Really do not use this function unless you know what you're doing.
-    """
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("once", DeprecationWarning)
-        warnings.warn("create_assembly_callable is now deprecated. Please use assemble instead.",
-                      DeprecationWarning)
-
-    if tensor is None:
-        raise ValueError("Have to provide tensor to write to")
-    return functools.partial(assemble, expr,
-                             tensor=tensor,
-                             bcs=bcs,
-                             form_compiler_parameters=form_compiler_parameters,
-                             mat_type=mat_type,
-                             sub_mat_type=sub_mat_type,
-                             diagonal=diagonal,
-                             assembly_type="residual")
-
-
-def _make_matrix(expr, bcs, *, mat_type, form_compiler_parameters=None, appctx, options_prefix):
-    """Make an empty matrix.
-
-    :arg expr: The expression being assembled.
-    :arg bcs: Iterable of boundary conditions.
-    :arg opts: :class:`_AssemblyOpts` containing the assembly options.
-
-    :returns: An empty :class:`.Matrix` or :class:`.ImplicitMatrix`.
-    """
     matfree = mat_type == "matfree"
     arguments = expr.arguments()
     if bcs is None:
@@ -726,8 +732,8 @@ def _make_matrix(expr, bcs, *, mat_type, form_compiler_parameters=None, appctx, 
                             "Preprocess by extracting the appropriate form with bc.extract_form('Jp') or bc.extract_form('J')")
     if matfree:
         return matrix.ImplicitMatrix(expr, bcs,
-                                     fc_params=fc_params,
                                      appctx=appctx,
+                                     fc_params=form_compiler_parameters,
                                      options_prefix=options_prefix)
 
     integral_types = set(i.integral_type() for i in expr.integrals())
@@ -784,62 +790,41 @@ def _make_matrix(expr, bcs, *, mat_type, form_compiler_parameters=None, appctx, 
                          options_prefix=options_prefix)
 
 
-# def _assemble_expr(expr, tensor, bcs, **kwargs):
-def _assemble_expr(expr, tensor, bcs, opts, assembly_rank):
-    """Assemble an expression into the provided tensor.
 
-    :arg expr: The expression to be assembled.
-    :arg tensor: The tensor to write to.
-    :arg bcs: Iterable of boundary conditions. If any are :class:`EquationBCSplit`
-        objects then this function is recursively called using the expressions
-        and boundary conditions defined for them.
-    :arg opts: :class:`_AssemblyOpts` containing the assembly options.
-    :arg assembly_rank: The appropriate :class:`_AssemblyRank`.
+
+@PETSc.Log.EventDecorator()
+def create_assembly_callable(expr, tensor=None, bcs=None, form_compiler_parameters=None,
+                             mat_type=None, sub_mat_type=None, diagonal=False):
+    r"""Create a callable object than be used to assemble expr into a tensor.
+
+    This is really only designed to be used inside residual and
+    jacobian callbacks, since it always assembles back into the
+    initially provided tensor.  See also :func:`allocate_matrix`.
+
+    .. warning::
+
+        This function is now deprecated.
+
+    .. warning::
+
+       Really do not use this function unless you know what you're doing.
     """
-    parloop_data = []
-    coefficient_numbers = expr.coefficient_numbering()
-    from firedrake.formmanipulation import split_form
-    for indices, _ in split_form(expr, diagonal=opts.diagonal):  # split = True (see tsfc_interface.py)
-        if assembly_rank == _AssemblyRank.MATRIX:
-            test, trial = expr.arguments()
-            Vrow = test.function_space()
-            Vcol = trial.function_space()
-            row, col = indices
-            if row is None and col is None:
-                lgmaps, unroll = zip(*(_collect_lgmaps(tensor, bcs, Vrow, Vcol, i, j)
-                                       for i, j in numpy.ndindex(tensor.block_shape)))
-                unroll = any(unroll)
-            else:
-                assert row is not None and col is not None
-                lgmaps, unroll = _collect_lgmaps(tensor, bcs, Vrow, Vcol, row, col)
-        else:
-            lgmaps = None
-            unroll = False
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("once", DeprecationWarning)
+        warnings.warn("create_assembly_callable is now deprecated. Please use assemble instead.",
+                      DeprecationWarning)
 
-        parloop_data.append(ParloopData(lgmaps, unroll))
-
-    # TODO Move tensor construction to here
     if tensor is None:
-        raise NotImplementedError
-
-    # _execute_parloops(expr, tensor, parloop_data, **kwargs)
-    _execute_parloops(expr, parloop_data, tensor=tensor, diagonal=opts.diagonal)
-    _apply_bcs(bcs, tensor, opts, assembly_rank)
-
-
-
-def _apply_bcs(bcs, tensor, opts, assembly_rank):
-    """TODO"""
-    dir_bcs = tuple(bc for bc in bcs if isinstance(bc, DirichletBC))
-    _apply_dirichlet_bcs(tensor, dir_bcs, opts, assembly_rank)
-
-    eq_bcs = tuple(bc for bc in bcs if isinstance(bc, EquationBCSplit))
-    if eq_bcs and opts.diagonal:
-        raise NotImplementedError("Diagonal assembly and EquationBC not supported")
-    for bc in eq_bcs:
-        if assembly_rank == _AssemblyRank.VECTOR:
-            bc.zero(tensor)
-        _assemble_expr(bc.f, tensor, bc.bcs, opts, assembly_rank)
+        raise ValueError("Have to provide tensor to write to")
+    return functools.partial(assemble, expr,
+                             tensor=tensor,
+                             bcs=bcs,
+                             form_compiler_parameters=form_compiler_parameters,
+                             mat_type=mat_type,
+                             sub_mat_type=sub_mat_type,
+                             diagonal=diagonal,
+                             assembly_type="residual")
 
 
 def _get_mat_type(mat_type, sub_mat_type, arguments):
@@ -901,60 +886,6 @@ def _collect_lgmaps(matrix, all_bcs, Vrow, Vcol, row, col):
     unroll = any(bc.function_space().component is not None
                  for bc in chain(bcrow, bccol))
     return (rlgmap, clgmap), unroll
-
-
-def _apply_dirichlet_bcs(tensor, bcs, opts, assembly_rank):
-    """Apply Dirichlet boundary conditions to a tensor.
-
-    :arg tensor: The tensor.
-    :arg bcs: Iterable of :class:`DirichletBC` objects.
-    :arg opts: :class:`_AssemblyOpts` containing the assembly options.
-    :arg assembly_rank: are we doing a scalar, vector, or matrix.
-    """
-    if assembly_rank == _AssemblyRank.MATRIX:
-        op2tensor = tensor.M
-        shape = tuple(len(a.function_space()) for a in tensor.a.arguments())
-        for bc in bcs:
-            V = bc.function_space()
-            nodes = bc.nodes
-            for i, j in numpy.ndindex(shape):
-                # Set diagonal entries on bc nodes to 1 if the current
-                # block is on the matrix diagonal and its index matches the
-                # index of the function space the bc is defined on.
-                if i != j:
-                    continue
-                if V.component is None and V.index is not None:
-                    # Mixed, index (no ComponentFunctionSpace)
-                    if V.index == i:
-                        op2tensor[i, j].set_local_diagonal_entries(nodes)
-                elif V.component is not None:
-                    # ComponentFunctionSpace, check parent index
-                    if V.parent.index is not None:
-                        # Mixed, index doesn't match
-                        if V.parent.index != i:
-                            continue
-                        # Index matches
-                    op2tensor[i, j].set_local_diagonal_entries(nodes, idx=V.component)
-                elif V.index is None:
-                    op2tensor[i, j].set_local_diagonal_entries(nodes)
-                else:
-                    raise RuntimeError("Unhandled BC case")
-    elif assembly_rank == _AssemblyRank.VECTOR:
-        for bc in bcs:
-            if opts.assembly_type == _AssemblyType.SOLUTION:
-                if opts.diagonal:
-                    bc.set(tensor, 1)
-                else:
-                    bc.apply(tensor)
-            elif opts.assembly_type == _AssemblyType.RESIDUAL:
-                bc.zero(tensor)
-            else:
-                raise AssertionError
-    elif assembly_rank == _AssemblyRank.SCALAR:
-        pass
-    else:
-        raise AssertionError
-
 
 
 def _get_map(func_space, integral_type):
