@@ -1,3 +1,4 @@
+import abc
 import functools
 import operator
 from collections import OrderedDict, defaultdict, namedtuple
@@ -23,6 +24,15 @@ from pyop2.exceptions import MapValueError, SparsityFormatError
 
 
 __all__ = ("assemble",)
+
+
+class AssemblyType(IntEnum):
+    """Enum enumerating possible assembly types.
+
+    See ``"assembly_type"`` from :func:`assemble` for more information.
+    """
+    SOLUTION = auto()
+    RESIDUAL = auto()
 
 
 #############################################################
@@ -211,7 +221,7 @@ class ParloopExecutor:
         wrapper_kernel_data = []
         integrals = chain(*[subexpr.integrals() for _, subexpr in split_form(self._expr, diagonal=self._diagonal)])
         for integral, parloop_data in zip(integrals, self._parloop_data):
-            iterset = _get_iterset(self._expr, integral, all_integer_subdomain_ids)
+            iterset = self._get_iterset(integral, all_integer_subdomain_ids)
             # since we are at 'Firedrake-level' we can inspect Firedrake objects
             extruded = isinstance(iterset, op2.ExtrudedSet)
             constant_layers = extruded and iterset.constant_layers
@@ -250,7 +260,7 @@ class ParloopExecutor:
                         yield c_
             self.coeffs_iterator = iter(coeffs())
 
-            iterset = _get_iterset(self._expr, integral, all_integer_subdomain_ids)
+            iterset = self._get_iterset(integral, all_integer_subdomain_ids)
             parloop_args = [
                 _as_parloop_arg(tsfc_arg, self, wrapper_kernel, parloop_data)
                 for tsfc_arg in wrapper_kernel.tsfc_args
@@ -260,6 +270,45 @@ class ParloopExecutor:
             except MapValueError:
                 raise RuntimeError("Integral measure does not match measure of all "
                                    "coefficients/arguments")
+
+    def _get_mesh(self, expr_kernel):
+        return self._expr.ufl_domains()[expr_kernel.kinfo.domain_number]
+
+
+    def _get_iterset(self, integral, all_integer_subdomain_ids):
+        expr = self._expr
+        mesh = integral.ufl_domain()
+        subdomain_data = expr.subdomain_data()[mesh].get(integral.integral_type(), None)
+        if subdomain_data is not None:
+            if integral.integral_type() != "cell":
+                raise NotImplementedError("subdomain_data only supported with cell integrals")
+            if integral.subdomain_id() not in ("otherwise", "everywhere"):
+                raise ValueError("Cannot use subdomain data and subdomain_id")
+            return subdomain_data
+        else:
+            return mesh.measure_set(integral.integral_type(), integral.subdomain_id(),
+                                    all_integer_subdomain_ids)
+
+    @staticmethod
+    def _get_map(func_space, integral_type):
+        """TODO"""
+        assert isinstance(func_space, ufl.FunctionSpace)
+
+        if integral_type in (
+            "cell",
+            "exterior_facet_top",
+            "exterior_facet_bottom",
+            "interior_facet_horiz"
+        ):
+            return func_space.cell_node_map()
+        elif integral_type in ("exterior_facet", "exterior_facet_vert"):
+            return func_space.exterior_facet_node_map()
+        elif integral_type in ("interior_facet", "interior_facet_vert"):
+            return func_space.interior_facet_node_map()
+        else:
+            raise AssertionError(f"Unknown integral type '{integral_type}'")
+
+
 
 
 # TODO Make into a singledispatchmethod when we have Python 3.8
@@ -274,35 +323,35 @@ def _as_parloop_arg(tsfc_arg, self, wrapper_kernel, parloop_data):
 @_as_parloop_arg.register(tsfc_utils.CoordinatesKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
-    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
     func = mesh.coordinates
-    map_ = _get_map(func.function_space(), kinfo.integral_type)
+    map_ = self._get_map(func.function_space(), kinfo.integral_type)
     return op2.DatParloopArg(func.dat, map_)
 
 @_as_parloop_arg.register(tsfc_utils.CellOrientationsKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
-    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
     func = mesh.cell_orientations()
-    map_ = _get_map(func.function_space(), kinfo.integral_type)
+    map_ = self._get_map(func.function_space(), kinfo.integral_type)
     return op2.DatParloopArg(func.dat, map_)
 
 @_as_parloop_arg.register(tsfc_utils.CellSizesKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
-    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
     func = mesh.cell_sizes
-    map_ = _get_map(func.function_space(), kinfo.integral_type)
+    map_ = self._get_map(func.function_space(), kinfo.integral_type)
     return op2.DatParloopArg(func.dat, map_)
 
 @_as_parloop_arg.register(tsfc_utils.ExteriorFacetKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
-    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
     return op2.DatParloopArg(mesh.exterior_facets.local_facet_dat)
 
 @_as_parloop_arg.register(tsfc_utils.InteriorFacetKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
-    mesh = _get_mesh(self._expr, wrapper_kernel.tsfc_kernel)
+    mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
     return op2.DatParloopArg(mesh.interior_facets.local_facet_dat)
 
 @_as_parloop_arg.register(tsfc_utils.ConstantKernelArg)
@@ -314,7 +363,7 @@ def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     if tsfc_arg.rank == 0:
         return op2.GlobalParloopArg(coeff.dat)
     elif tsfc_arg.rank == 1:
-        return op2.DatParloopArg(coeff.dat, _get_map(coeff.function_space(), kinfo.integral_type))
+        return op2.DatParloopArg(coeff.dat, self._get_map(coeff.function_space(), kinfo.integral_type))
     else:
         raise AssertionError("TODO")
 
@@ -330,24 +379,24 @@ def _(tsfc_arg, self, wrapper_kernel, parloop_data):
         i, = indices
         if i is None:
             return op2.DatParloopArg(
-                self._tensor.dat, _get_map(self._tensor.function_space(), kinfo.integral_type)
+                self._tensor.dat, self._get_map(self._tensor.function_space(), kinfo.integral_type)
             )
         else:
             return op2.DatParloopArg(
                 self._tensor.dat[i], 
-                _get_map(self._tensor.function_space()[i], kinfo.integral_type)
+                self._get_map(self._tensor.function_space()[i], kinfo.integral_type)
             )
     elif tsfc_arg.rank == 2:
         i, j = indices
         test, trial = tensor.a.arguments()
         if i is None and j is None:
-            rmap = _get_map(test.function_space(), kinfo.integral_type)
-            cmap = _get_map(trial.function_space(), kinfo.integral_type)
+            rmap = self._get_map(test.function_space(), kinfo.integral_type)
+            cmap = self._get_map(trial.function_space(), kinfo.integral_type)
             return op2.MatParloopArg(tensor.M, (rmap, cmap), lgmaps=tuple(parloop_data.lgmaps))
         else:
             assert i is not None and j is not None
-            rmap = _get_map(test.function_space()[i], kinfo.integral_type)
-            cmap = _get_map(trial.function_space()[j], kinfo.integral_type)
+            rmap = self._get_map(test.function_space()[i], kinfo.integral_type)
+            cmap = self._get_map(trial.function_space()[j], kinfo.integral_type)
             return op2.MatParloopArg(tensor.M[i, j], (rmap, cmap), lgmaps=(parloop_data.lgmaps,))
     else:
         raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
@@ -381,7 +430,7 @@ class _FormAssembler(abc.ABC):
 
 class _ZeroFormAssembler(_FormAssembler):
 
-    def __init__(self, expr, **kwargs)
+    def __init__(self, expr, **kwargs):
         super().__init__(**kwargs)
 
         if len(expr.arguments()) != 0:
@@ -407,23 +456,23 @@ class _OneFormAssembler(_FormAssembler):
 
     def __init__(
         self,
-        expr,
+        form,
         tensor=None,
         bcs=None,
         *,
-        diagonal=False,
         assembly_type=AssemblyType.SOLUTION,
+        diagonal=False,
         **kwargs
     ):
         super().__init__(**kwargs)
 
         if diagonal:
-            test, trial = expr.arguments()
+            test, trial = form.arguments()
             if test.function_space() != trial.function_space():
                 raise ValueError("Can only assemble the diagonal of 2-form if the "
                                  "function spaces match")
         else:
-            test, = expr.arguments()
+            test, = form.arguments()
 
         if tensor:
             if test.function_space() != tensor.function_space():
@@ -431,31 +480,36 @@ class _OneFormAssembler(_FormAssembler):
             tensor.dat.zero()
         else:
             tensor = firedrake.Function(test.function_space())
-        self._tensor = tensor
 
-        self._expr = expr
+        self._form = form
+        self._bcs = bcs
+        self._tensor = tensor
+        self._assembly_type = assembly_type
         self._diagonal = diagonal
 
     @property
     def result(self):
-        return self.tensor
+        return self._tensor
 
-    def assemble(self, expr=None, bcs=None):
-        expr = self._expr if not expr
-        bcs = self._bcs if not bcs
+    def assemble(self, form=None, bcs=None):
+        # These arguments are optional in case we are calling this function recursively
+        if form is None:
+            assert bcs is None
+            form = self._form
+            bcs = self._bcs
 
-        parloop_data = [ParloopData() for _ in split_form(expr)]
-        _execute_parloops(expr, parloop_data, tensor=tensor)
-
-        # Might have gotten here without EquationBC objects preprocessed
-        if any(isinstance(bc, EquationBC) for bc in bcs):
-            bcs = tuple(bc.extract_form("F") for bc in bcs)
-
-        eq_bcs = tuple(bc for bc in bcs if isinstance(bc, EquationBCSplit))
-        if eq_bcs and opts.diagonal:
-            raise NotImplementedError("Diagonal assembly and EquationBC not supported")
+        parloop_data = [ParloopData() for _ in split_form(form)]
+        _execute_parloops(
+            form,
+            parloop_data,
+            tensor=self._tensor,
+            diagonal=self._diagonal,
+            form_compiler_parameters=self.form_compiler_parameters
+        )
 
         for bc in solving._extract_bcs(bcs):
+            if isinstance(bc, EquationBC):
+                bc = bc.extract_form("F")
             self._apply_bc(bc) 
 
     def _apply_bc(self, bc):
@@ -463,6 +517,8 @@ class _OneFormAssembler(_FormAssembler):
         if isinstance(bc, DirichletBC):
             self._apply_dirichlet_bc(bc)
         elif isinstance(bc, EquationBCSplit):
+            if self._diagonal:
+                raise NotImplementedError("Diagonal assembly and EquationBC not supported")
             bc.zero(self._tensor)
             self.assemble(bc.f, bc.bcs)
         else:
@@ -486,6 +542,7 @@ class _TwoFormAssembler(_FormAssembler):
         self,
         expr,
         tensor=None,
+        bcs=None,
         *,
         mat_type=None,
         sub_mat_type=None,
@@ -495,43 +552,44 @@ class _TwoFormAssembler(_FormAssembler):
     ):
         super().__init__(form_compiler_parameters=form_compiler_parameters)
 
-        if expr.arguments() != tensor.a.arguments():
-            raise ValueError("Form's arguments do not match provided result tensor")
-
-        mat_type, sub_mat_type = _get_mat_type(mat_type, sub_mat_type, expr.arguments())
-
-        self._mat_type = mat_type
-        self._sub_mat_type = sub_mat_type
-        self._appctx = appctx or {}
-        self._options_prefix = options_prefix
+        mat_type, sub_mat_type = self._get_mat_type(mat_type, sub_mat_type, expr.arguments())
 
         if tensor:
             if mat_type != "matfree":
                 tensor.M.zero()
-            if matrix.a.arguments() != expr.arguments():
+            if tensor.a.arguments() != expr.arguments():
                 raise ValueError("Form's arguments do not match provided result tensor")
         else:
             tensor = allocate_matrix(
-                expr, bcs,
-                form_compiler_parameters=form_compiler_parameters
+                expr, bcs, mat_type=mat_type, sub_mat_type=sub_mat_type, appctx=appctx,
+                form_compiler_parameters=form_compiler_parameters,
+                options_prefix=options_prefix
             )
+
+        self._expr = expr
         self._tensor = tensor
+        self._bcs = bcs
+        self._is_matfree = mat_type == "matfree"
+        self._appctx = appctx or {}
+        self._options_prefix = options_prefix
 
 
     @property
     def result(self):
-        if self._mat_type == "matfree":
-            self._tensor.assemble()
-        else:
+        if not self._is_matfree:
             self._tensor.M.assemble()
         return self._tensor
 
     def assemble(self, expr=None, bcs=None):
-        if self._mat_type == "matfree":
-            return
+        if self._is_matfree:
+            self._tensor.assemble()
 
-        expr = self._expr if not expr
-        bcs = self._bcs if not bcs
+        if expr is None:
+            assert bcs == None
+            expr = self._expr
+            bcs = self._bcs
+
+        bcs = solving._extract_bcs(bcs)
 
         parloop_data = []
         for indices, _ in split_form(expr):
@@ -540,17 +598,22 @@ class _TwoFormAssembler(_FormAssembler):
             Vcol = trial.function_space()
             row, col = indices
             if row is None and col is None:
-                lgmaps, unroll = zip(*(_collect_lgmaps(self._tensor, self._bcs, Vrow, Vcol, i, j)
+                lgmaps, unroll = zip(*(self._collect_lgmaps(self._tensor, bcs, Vrow, Vcol, i, j)
                                        for i, j in numpy.ndindex(self._tensor.block_shape)))
                 unroll = any(unroll)
             else:
                 assert row is not None and col is not None
-                lgmaps, unroll = _collect_lgmaps(self._tensor, self._bcs, Vrow, Vcol, row, col)
+                lgmaps, unroll = self._collect_lgmaps(self._tensor, bcs, Vrow, Vcol, row, col)
 
             parloop_data.append(ParloopData(lgmaps, unroll))
-        _execute_parloops(expr, parloop_data, tensor=self._tensor)
+        _execute_parloops(
+            expr,
+            parloop_data,
+            tensor=self._tensor,
+            form_compiler_parameters=self.form_compiler_parameters
+        )
 
-        for bc in solving._extract_bcs(bcs):
+        for bc in bcs:
             self._apply_bc(bc)
 
     def _apply_bc(self, bc):
@@ -590,17 +653,69 @@ class _TwoFormAssembler(_FormAssembler):
             else:
                 raise RuntimeError("Unhandled BC case")
 
+    @staticmethod
+    def _get_mat_type(mat_type, sub_mat_type, arguments):
+        """Validate the matrix types provided by the user and set any that are
+        undefined to default values.
+
+        :arg mat_type: (:class:`str`) PETSc matrix type for the assembled matrix.
+        :arg sub_mat_type: (:class:`str`) PETSc matrix type for blocks if
+            ``mat_type`` is ``"nest"``.
+        :arg arguments: The test and trial functions of the expression being assembled.
+        :raises ValueError: On bad arguments.
+        :returns: 2-:class:`tuple` of validated/default ``mat_type`` and ``sub_mat_type``.
+        """
+        if mat_type is None:
+            mat_type = parameters.parameters["default_matrix_type"]
+            if any(V.ufl_element().family() == "Real"
+                   for arg in arguments
+                   for V in arg.function_space()):
+                mat_type = "nest"
+        if mat_type not in {"matfree", "aij", "baij", "nest", "dense"}:
+            raise ValueError(f"Unrecognised matrix type, '{mat_type}'")
+        if sub_mat_type is None:
+            sub_mat_type = parameters.parameters["default_sub_matrix_type"]
+        if sub_mat_type not in {"aij", "baij"}:
+            raise ValueError(f"Invalid submatrix type, '{sub_mat_type}' (not 'aij' or 'baij')")
+        return mat_type, sub_mat_type
+
+    @staticmethod
+    def _collect_lgmaps(matrix, all_bcs, Vrow, Vcol, row, col):
+        """Obtain local to global maps for matrix insertion in the
+        presence of boundary conditions.
+
+        :arg matrix: the matrix.
+        :arg all_bcs: all boundary conditions involved in the assembly of
+            the matrix.
+        :arg Vrow: function space for rows.
+        :arg Vcol: function space for columns.
+        :arg row: index into Vrow (by block).
+        :arg col: index into Vcol (by block).
+        :returns: 2-tuple ``(row_lgmap, col_lgmap), unroll``. unroll will
+           indicate to the codegeneration if the lgmaps need to be
+           unrolled from any blocking they contain.
+        """
+        if len(Vrow) > 1:
+            bcrow = tuple(bc for bc in all_bcs
+                          if bc.function_space_index() == row)
+        else:
+            bcrow = all_bcs
+        if len(Vcol) > 1:
+            bccol = tuple(bc for bc in all_bcs
+                          if bc.function_space_index() == col
+                          and isinstance(bc, DirichletBC))
+        else:
+            bccol = tuple(bc for bc in all_bcs
+                          if isinstance(bc, DirichletBC))
+        rlgmap, clgmap = matrix.M[row, col].local_to_global_maps
+        rlgmap = Vrow[row].local_to_global_map(bcrow, lgmap=rlgmap)
+        clgmap = Vcol[col].local_to_global_map(bccol, lgmap=clgmap)
+        unroll = any(bc.function_space().component is not None
+                     for bc in chain(bcrow, bccol))
+        return (rlgmap, clgmap), unroll
+
 
 #############################################################
-
-class AssemblyType(IntEnum):
-    """Enum enumerating possible assembly types.
-
-    See ``"assembly_type"`` from :func:`assemble` for more information.
-    """
-    SOLUTION = auto()
-    RESIDUAL = auto()
-
 
 @PETSc.Log.EventDecorator()
 @annotate_assemble
@@ -679,7 +794,7 @@ def assemble(expr, *args, **kwargs):
         raise TypeError(f"Unable to assemble: {expr}")
 
 
-def _assemble_form(expr, *args, *, diagonal=False, **kwargs):
+def _assemble_form(expr, *args, diagonal=False, **kwargs):
     """Assemble an expression.
 
     :arg expr: a :class:`~ufl.classes.Form` or a :class:`~slate.TensorBase`
@@ -690,11 +805,11 @@ def _assemble_form(expr, *args, *, diagonal=False, **kwargs):
     """
     rank = len(expr.arguments())
     if rank == 0:
-        assembler = _ScalarAssembler(expr, *args, **kwargs)
+        assembler = _ZeroFormAssembler(expr, *args, **kwargs)
     elif rank == 1 or (rank == 2 and diagonal):
-        assembler = _VectorAssembler(expr, *args, diagonal=diagonal, **kwargs)
+        assembler = _OneFormAssembler(expr, *args, diagonal=diagonal, **kwargs)
     elif rank == 2:
-        assembler = _MatrixAssembler(expr, *args, **kwargs)
+        assembler = _TwoFormAssembler(expr, *args, **kwargs)
     else:
         raise AssertionError
 
@@ -740,13 +855,13 @@ def allocate_matrix(
     for bc in bcs:
         integral_types.update(integral.integral_type()
                               for integral in bc.integrals())
-    nest = opts.mat_type == "nest"
+    nest = mat_type == "nest"
     if nest:
-        baij = opts.sub_mat_type == "baij"
+        baij = sub_mat_type == "baij"
     else:
-        baij = opts.mat_type == "baij"
+        baij = mat_type == "baij"
 
-    if any(len(a.function_space()) > 1 for a in arguments) and opts.mat_type == "baij":
+    if any(len(a.function_space()) > 1 for a in arguments) and mat_type == "baij":
         raise ValueError("BAIJ matrix type makes no sense for mixed spaces, use 'aij'")
 
     get_cell_map = operator.methodcaller("cell_node_map")
@@ -790,8 +905,6 @@ def allocate_matrix(
                          options_prefix=options_prefix)
 
 
-
-
 @PETSc.Log.EventDecorator()
 def create_assembly_callable(expr, tensor=None, bcs=None, form_compiler_parameters=None,
                              mat_type=None, sub_mat_type=None, diagonal=False):
@@ -827,99 +940,3 @@ def create_assembly_callable(expr, tensor=None, bcs=None, form_compiler_paramete
                              assembly_type="residual")
 
 
-def _get_mat_type(mat_type, sub_mat_type, arguments):
-    """Validate the matrix types provided by the user and set any that are
-    undefined to default values.
-
-    :arg mat_type: (:class:`str`) PETSc matrix type for the assembled matrix.
-    :arg sub_mat_type: (:class:`str`) PETSc matrix type for blocks if
-        ``mat_type`` is ``"nest"``.
-    :arg arguments: The test and trial functions of the expression being assembled.
-    :raises ValueError: On bad arguments.
-    :returns: 2-:class:`tuple` of validated/default ``mat_type`` and ``sub_mat_type``.
-    """
-    if mat_type is None:
-        mat_type = parameters.parameters["default_matrix_type"]
-        if any(V.ufl_element().family() == "Real"
-               for arg in arguments
-               for V in arg.function_space()):
-            mat_type = "nest"
-    if mat_type not in {"matfree", "aij", "baij", "nest", "dense"}:
-        raise ValueError(f"Unrecognised matrix type, '{mat_type}'")
-    if sub_mat_type is None:
-        sub_mat_type = parameters.parameters["default_sub_matrix_type"]
-    if sub_mat_type not in {"aij", "baij"}:
-        raise ValueError(f"Invalid submatrix type, '{sub_mat_type}' (not 'aij' or 'baij')")
-    return mat_type, sub_mat_type
-
-
-def _collect_lgmaps(matrix, all_bcs, Vrow, Vcol, row, col):
-    """Obtain local to global maps for matrix insertion in the
-    presence of boundary conditions.
-
-    :arg matrix: the matrix.
-    :arg all_bcs: all boundary conditions involved in the assembly of
-        the matrix.
-    :arg Vrow: function space for rows.
-    :arg Vcol: function space for columns.
-    :arg row: index into Vrow (by block).
-    :arg col: index into Vcol (by block).
-    :returns: 2-tuple ``(row_lgmap, col_lgmap), unroll``. unroll will
-       indicate to the codegeneration if the lgmaps need to be
-       unrolled from any blocking they contain.
-    """
-    if len(Vrow) > 1:
-        bcrow = tuple(bc for bc in all_bcs
-                      if bc.function_space_index() == row)
-    else:
-        bcrow = all_bcs
-    if len(Vcol) > 1:
-        bccol = tuple(bc for bc in all_bcs
-                      if bc.function_space_index() == col
-                      and isinstance(bc, DirichletBC))
-    else:
-        bccol = tuple(bc for bc in all_bcs
-                      if isinstance(bc, DirichletBC))
-    rlgmap, clgmap = matrix.M[row, col].local_to_global_maps
-    rlgmap = Vrow[row].local_to_global_map(bcrow, lgmap=rlgmap)
-    clgmap = Vcol[col].local_to_global_map(bccol, lgmap=clgmap)
-    unroll = any(bc.function_space().component is not None
-                 for bc in chain(bcrow, bccol))
-    return (rlgmap, clgmap), unroll
-
-
-def _get_map(func_space, integral_type):
-    """TODO"""
-    assert isinstance(func_space, ufl.FunctionSpace)
-
-    if integral_type in (
-        "cell",
-        "exterior_facet_top",
-        "exterior_facet_bottom",
-        "interior_facet_horiz"
-    ):
-        return func_space.cell_node_map()
-    elif integral_type in ("exterior_facet", "exterior_facet_vert"):
-        return func_space.exterior_facet_node_map()
-    elif integral_type in ("interior_facet", "interior_facet_vert"):
-        return func_space.interior_facet_node_map()
-    else:
-        raise AssertionError(f"Unknown integral type '{integral_type}'")
-
-
-def _get_mesh(expr, expr_kernel):
-    return expr.ufl_domains()[expr_kernel.kinfo.domain_number]
-
-
-def _get_iterset(expr, integral, all_integer_subdomain_ids):
-    mesh = integral.ufl_domain()
-    subdomain_data = expr.subdomain_data()[mesh].get(integral.integral_type(), None)
-    if subdomain_data is not None:
-        if integral.integral_type() != "cell":
-            raise NotImplementedError("subdomain_data only supported with cell integrals")
-        if integral.subdomain_id() not in ("otherwise", "everywhere"):
-            raise ValueError("Cannot use subdomain data and subdomain_id")
-        return subdomain_data
-    else:
-        return mesh.measure_set(integral.integral_type(), integral.subdomain_id(),
-                                all_integer_subdomain_ids)
