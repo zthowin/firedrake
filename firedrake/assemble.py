@@ -616,8 +616,11 @@ class _LocalKernelBuilder:
 
 
 def _local_kernel_cache_key(form, **kwargs):
-    form_compiler_parameters = kwargs.pop("form_compiler_parameters", None)
-    return cachetools.keys.hashkey(form.signature(), _tuplify(form_compiler_parameters or {}), **kwargs)
+    return (
+        (form.signature(),)
+        + _tuplify(kwargs.pop("form_compiler_parameters", None) or {})
+        + cachetools.keys.hashkey(**kwargs)
+    )
 
 
 @cachetools.cached(cachetools.LRUCache(maxsize=128), key=_local_kernel_cache_key)
@@ -706,9 +709,13 @@ class _WrapperKernelBuilder:
         return wrapper_kernels
 
 
-def _wrapper_kernel_cache_key(form, **kwargs):
-    form_compiler_parameters = kwargs.pop("form_compiler_parameters", None)
-    return cachetools.keys.hashkey(form.signature(), _tuplify(form_compiler_parameters or {}), **kwargs)
+def _wrapper_kernel_cache_key(form, kernel_data, **kwargs):
+    return (
+        (form.signature(),)
+        + tuple(kernel_data)
+        + _tuplify(kwargs.pop("form_compiler_parameters", None) or {})
+        + cachetools.keys.hashkey(**kwargs)
+    )
 
 
 @cachetools.cached(cachetools.LRUCache(maxsize=128), key=_wrapper_kernel_cache_key)
