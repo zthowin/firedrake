@@ -272,7 +272,7 @@ class _ZeroFormAssembler(_FormAssembler):
     def assemble(self):
         _execute_parloops(
             self._expr,
-            [ParloopData() for _ in split_form(self._expr)],
+            [ParloopData() for _ in _split_expr(self._expr)],
             tensor=self._tensor,
             form_compiler_parameters=self.form_compiler_parameters
         )
@@ -324,7 +324,7 @@ class _OneFormAssembler(_FormAssembler):
             form = self._form
             bcs = self._bcs
 
-        parloop_data = [ParloopData() for _ in split_form(form)]
+        parloop_data = [ParloopData() for _ in _split_expr(form)]
         _execute_parloops(
             form,
             parloop_data,
@@ -418,7 +418,7 @@ class _TwoFormAssembler(_FormAssembler):
         bcs = solving._extract_bcs(bcs)
 
         parloop_data = []
-        for indices, _ in split_form(expr):
+        for indices, _ in _split_expr(expr):
             test, trial = self._expr.arguments()
             Vrow = test.function_space()
             Vcol = trial.function_space()
@@ -616,8 +616,12 @@ class _LocalKernelBuilder:
 
 
 def _local_kernel_cache_key(form, **kwargs):
+    if isinstance(form, ufl.Form):
+        sig = form.signature()
+    elif isinstance(form, slate.TensorBase):
+        sig = form.expression_hash
     return (
-        (form.signature(),)
+        (sig,)
         + _tuplify(kwargs.pop("form_compiler_parameters", None) or {})
         + cachetools.keys.hashkey(**kwargs)
     )
@@ -710,8 +714,12 @@ class _WrapperKernelBuilder:
 
 
 def _wrapper_kernel_cache_key(form, kernel_data, **kwargs):
+    if isinstance(form, ufl.Form):
+        sig = form.signature()
+    elif isinstance(form, slate.TensorBase):
+        sig = form.expression_hash
     return (
-        (form.signature(),)
+        (sig,)
         + tuple(kernel_data)
         + _tuplify(kwargs.pop("form_compiler_parameters", None) or {})
         + cachetools.keys.hashkey(**kwargs)
@@ -751,16 +759,17 @@ class ParloopExecutor:
         # TODO find another way
         # These will be used to correctly interpret the "otherwise" subdomain
         all_integer_subdomain_ids = defaultdict(list)
-        for _, subexpr in split_form(self._expr, diagonal=self._diagonal):
+        for _, subexpr in _split_expr(self._expr, diagonal=self._diagonal):
             for integral in subexpr.integrals():
-                if integral.subdomain_id() != "otherwise":
+                # TODO Slate integrals do not have this attribute
+                if hasattr(integral, "subdomain_id") and integral.subdomain_id() != "otherwise":
                     all_integer_subdomain_ids[integral.integral_type()].append(integral.subdomain_id())
 
         for k, v in all_integer_subdomain_ids.items():
             all_integer_subdomain_ids[k] = tuple(sorted(v))
 
         wrapper_kernel_data = []
-        integrals = itertools.chain(*[subexpr.integrals() for _, subexpr in split_form(self._expr, diagonal=self._diagonal)])
+        integrals = itertools.chain(*[subexpr.integrals() for _, subexpr in _split_expr(self._expr, diagonal=self._diagonal)])
         for integral, parloop_data in zip(integrals, self._parloop_data):
             iterset = self._get_iterset(integral, all_integer_subdomain_ids)
             # since we are at 'Firedrake-level' we can inspect Firedrake objects
@@ -789,7 +798,7 @@ class ParloopExecutor:
         #     o = c(op2.READ)
         #     extra_args.append(o)
 
-        integrals = itertools.chain(*[subexpr.integrals() for _, subexpr in split_form(self._expr, diagonal=self._diagonal)])
+        integrals = itertools.chain(*[subexpr.integrals() for _, subexpr in _split_expr(self._expr, diagonal=self._diagonal)])
         for integral, wrapper_kernel, parloop_data in zip(integrals, wrapper_kernels, self._parloop_data):
             # Icky generator so we can access the correct coefficients in order
             kinfo = wrapper_kernel.tsfc_kernel.kinfo
@@ -818,16 +827,21 @@ class ParloopExecutor:
 
     def _get_iterset(self, integral, all_integer_subdomain_ids):
         expr = self._expr
-        mesh = integral.ufl_domain()
+        if isinstance(expr, ufl.Form):
+            mesh = integral.ufl_domain()
+            subdomain_id = integral.subdomain_id()
+        elif isinstance(expr, slate.TensorBase):
+            mesh = expr.ufl_domain()
+            subdomain_id = "otherwise"
         subdomain_data = expr.subdomain_data()[mesh].get(integral.integral_type(), None)
         if subdomain_data is not None:
             if integral.integral_type() != "cell":
                 raise NotImplementedError("subdomain_data only supported with cell integrals")
-            if integral.subdomain_id() not in ("otherwise", "everywhere"):
+            if subdomain_id not in ("otherwise", "everywhere"):
                 raise ValueError("Cannot use subdomain data and subdomain_id")
             return subdomain_data
         else:
-            return mesh.measure_set(integral.integral_type(), integral.subdomain_id(),
+            return mesh.measure_set(integral.integral_type(), subdomain_id,
                                     all_integer_subdomain_ids)
 
     @staticmethod
@@ -948,3 +962,14 @@ def _execute_parloops(*args, **kwargs):
 # TODO put in utils
 def _tuplify(params):
     return tuple((k, params[k]) for k in sorted(params))
+
+
+def _split_expr(expr, diagonal=False):
+    if isinstance(expr, ufl.Form):
+        return split_form(expr, diagonal)
+    elif isinstance(expr, slate.TensorBase):
+        # TODO make split kernel
+        # TODO this is replicated in slac/compiler.py
+        return (([None]*expr.rank, expr),)
+    else:
+        raise AssertionError
