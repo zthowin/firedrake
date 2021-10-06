@@ -390,7 +390,7 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
             wrapper_kernel_args.append(op2.DatWrapperKernelArg(dat.dim, map_.arity))
             parloop_args.append(op2.ParloopArg(dat, map_))
         else:
-            wrapper_kernel_args.append(op2.MatWrapperKernelArg(tensor.dims, (rows_map, columns_map)))
+            wrapper_kernel_args.append(op2.MatWrapperKernelArg(tensor.dims, (rows_map.arity, columns_map.arity)))
             parloop_args.append(op2.MatParloopArg(tensor, (rows_map, columns_map)))
 
     if oriented:
