@@ -747,11 +747,14 @@ def _(tsfc_arg, self, kernel_data):
     return op2.DatWrapperKernelArg(2, 1)
 
 
-@_as_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
 @_as_wrapper_kernel_arg.register(tsfc_utils.ExteriorFacetKernelArg)
 def _(tsfc_arg, self, kernel_data):
     return op2.DatWrapperKernelArg(1, 1)
 
+@_as_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
+def _(tsfc_arg, self, kernel_data):
+    arity, = tsfc_arg.shape
+    return op2.DatWrapperKernelArg((1,), arity)
 
 @_as_wrapper_kernel_arg.register(tsfc_utils.CoefficientKernelArg)
 @_as_wrapper_kernel_arg.register(tsfc_utils.CoordinatesKernelArg)
@@ -769,24 +772,26 @@ def _(tsfc_arg, self, kernel_data):
         dim, arity = split_shape(tsfc_arg.finat_element)
         return op2.DatWrapperKernelArg(dim, arity)
     elif tsfc_arg.rank == 2:
-        rdim, rarity = split_shape(tsfc_arg.relem, combine_dims=True)
-        cdim, carity = split_shape(tsfc_arg.celem, combine_dims=True)
+        rdim, rarity = split_shape(tsfc_arg.relem)
+        cdim, carity = split_shape(tsfc_arg.celem)
+
+        # PyOP2 matrix objects have scalar dims so we cope with that here..
+        rdim = (numpy.prod(rdim, dtype=int),)
+        cdim = (numpy.prod(cdim, dtype=int),)
+
         return op2.MatWrapperKernelArg(((rdim+cdim,),), (rarity, carity), unroll=kernel_data.unroll)
     else:
         raise AssertionError
 
 
-def split_shape(finat_element, combine_dims=False):
+def split_shape(finat_element):
     """Split a FInAT element's index_shape into its 'basis' and 'node' shapes where the
     former describes the number and layout of nodes and the latter describes the local
     shape at each node.
     """
     if isinstance(finat_element, finat.TensorFiniteElement):
-        if combine_dims:
-            dim = (numpy.prod(finat_element._shape, dtype=int),)
-        else:
-            dim = finat_element._shape
-        arity = numpy.prod(finat_element.index_shape[:-len(finat_element._shape)], dtype=int)
+        dim = finat_element._shape
+        arity = numpy.prod(finat_element.index_shape[:-len(dim)], dtype=int)
     else:
         dim = (1,)
         arity = numpy.prod(finat_element.index_shape, dtype=int)
@@ -895,7 +900,6 @@ class ParloopExecutor:
                 _as_parloop_arg(tsfc_arg, self, wrapper_kernel, parloop_data)
                 for tsfc_arg in wrapper_kernel.tsfc_args
             ]
-            breakpoint()
             try:
                 op2.parloop(wrapper_kernel.pyop2_kernel, iterset, parloop_args)
             except MapValueError:

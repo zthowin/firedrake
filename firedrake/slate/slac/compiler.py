@@ -20,7 +20,7 @@ import time
 from hashlib import md5
 
 from firedrake_citations import Citations
-from firedrake import tsfc_interface
+from firedrake import tsfc_interface, pyop2_interface
 from firedrake.tsfc_interface import SplitKernel, KernelInfo, TSFCKernel
 
 from firedrake.slate.slac.kernel_builder import LocalLoopyKernelBuilder, LocalKernelBuilder
@@ -200,7 +200,7 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
     loopy_merged = loopy.register_callable(loopy_merged, INVCallable.name, INVCallable())
     loopy_merged = loopy.register_callable(loopy_merged, SolveCallable.name, SolveCallable())
 
-    pyop2_kernel = tsfc_interface.as_pyop2_local_kernel(
+    pyop2_kernel = pyop2_interface.as_pyop2_local_kernel(
         loopy_merged,
         name,
         arguments,
