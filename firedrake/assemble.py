@@ -8,12 +8,13 @@ import operator
 import typing
 
 import cachetools
+import finat
 import firedrake
 import numpy
 import tsfc.kernel_interface.firedrake_loopy as tsfc_utils  # TODO Stopgap
 import ufl
 from firedrake import (assemble_expressions, matrix, parameters, solving,
-                       tsfc_interface, utils)
+                       pyop2_interface, tsfc_interface, utils)
 from firedrake.adjoint import annotate_assemble
 from firedrake.bcs import DirichletBC, EquationBC, EquationBCSplit
 from firedrake.formmanipulation import split_form
@@ -569,50 +570,59 @@ def _assemble_form(form, *args, diagonal=False, **kwargs):
     return assembler.result
 
 
-@dataclass(frozen=True)
-class _LocalKernel:
-
-    tsfc_kernel: tsfc_interface.SplitKernel
-
-
-class _LocalKernelBuilder:
-
-    def __init__(self, expr, *, diagonal=False, form_compiler_parameters=None):
-        self._expr = expr
-        self._diagonal = diagonal
-        self._form_compiler_parameters = form_compiler_parameters or {}
+class _AssembleLocalKernelBuilder(pyop2_interface.LocalKernelBuilder):
 
     def build(self):
         try:
-            topology, = set(d.topology for d in self._expr.ufl_domains())
+            topology, = set(d.topology for d in self.expr.ufl_domains())
         except ValueError:
             raise NotImplementedError("All integration domains must share a mesh topology")
 
         # Ensure mesh is 'initialised' as we could have got here without building a
         # function space (e.g. if integrating a constant).
-        for m in self._expr.ufl_domains():
+        for m in self.expr.ufl_domains():
             m.init()
 
-        for o in itertools.chain(self._expr.arguments(), self._expr.coefficients()):
+        for o in itertools.chain(self.expr.arguments(), self.expr.coefficients()):
             domain = o.ufl_domain()
             if domain is not None and domain.topology != topology:
                 raise NotImplementedError("Assembly with multiple meshes is not supported")
 
-        if isinstance(self._expr, slate.TensorBase):
-            if self._diagonal:
-                raise NotImplementedError("Diagonal assembly with Slate is not supported")
-            tsfc_kernels = slac.compile_expression(
-                self._expr, tsfc_parameters=self._form_compiler_parameters
-            )
-        else:
-            tsfc_kernels = tsfc_interface.compile_form(
-                self._expr, "form", parameters=self._form_compiler_parameters, diagonal=self._diagonal
-            )
-
         local_kernels = []
-        for tsfc_kernel in tsfc_kernels:
-            local_kernels.append(_LocalKernel(tsfc_kernel))
+        for tsfc_kernel in self.compile_expr():
+            local_kernels.append(pyop2_interface.LocalKernel(tsfc_kernel))
         return tuple(local_kernels)
+
+    @abc.abstractmethod
+    def compile_expr(self):
+        ...
+
+
+class _AssembleFormLocalKernelBuilder(_AssembleLocalKernelBuilder):
+
+    def __init__(self, expr, *, diagonal=False, form_compiler_parameters=None):
+        super().__init__(expr)
+        self._diagonal = diagonal
+        self._form_compiler_parameters = form_compiler_parameters or {}
+
+    def compile_expr(self):
+        return tsfc_interface.compile_form(
+            self.expr, "form", parameters=self._form_compiler_parameters, diagonal=self._diagonal
+        )
+
+
+
+class _AssembleSlateLocalKernelBuilder(_AssembleLocalKernelBuilder):
+
+    def __init__(self, expr, *, form_compiler_parameters=None):
+        super().__init__(expr)
+        self._form_compiler_parameters = form_compiler_parameters or {}
+
+    def compile_expr(self):
+        return slac.compile_expression(
+            self.expr, tsfc_parameters=self._form_compiler_parameters
+        )
+
 
 
 def _local_kernel_cache_key(form, **kwargs):
@@ -628,15 +638,20 @@ def _local_kernel_cache_key(form, **kwargs):
 
 
 @cachetools.cached(cachetools.LRUCache(maxsize=128), key=_local_kernel_cache_key)
-def _make_local_kernels(form, **kwargs):
-    return _LocalKernelBuilder(form, **kwargs).build()
+def _make_local_kernels(expr, **kwargs):
+    if isinstance(expr, ufl.Form):
+        return _AssembleFormLocalKernelBuilder(expr, **kwargs).build()
+    elif isinstance(expr, slate.TensorBase):
+        return _AssembleSlateLocalKernelBuilder(expr, **kwargs).build()
+    else:
+        raise AssertionError
 
 
 @dataclass(frozen=True)
 class _WrapperKernel:
 
     pyop2_kernel: op2.WrapperKernel
-    local_kernel: _LocalKernel
+    local_kernel: pyop2_interface.LocalKernel
 
     @property
     def tsfc_args(self):
@@ -666,9 +681,9 @@ class WrapperKernelData:
 
 
 # TODO different class for Slate (local + wrapper)
-class _WrapperKernelBuilder:
+class _AssembleWrapperKernelBuilder:
 
-    def __init__(self, expr, kernel_data, **kwargs):
+    def __init__(self, expr, kernel_data, *, diagonal=False, **kwargs):
         """TODO
 
         .. note::
@@ -677,6 +692,7 @@ class _WrapperKernelBuilder:
         """
         self._expr = expr
         self._kernel_data = kernel_data
+        self._diagonal = diagonal
         self._local_kernel_kwargs = kwargs or {}
 
     def build(self):
@@ -687,7 +703,7 @@ class _WrapperKernelBuilder:
             kinfo = local_kernel.tsfc_kernel.kinfo
 
             wrapper_kernel_args = [
-                tsfc_interface.as_pyop2_wrapper_kernel_arg(arg, unroll=kernel_data.unroll)
+                self._as_wrapper_kernel_arg(arg, kernel_data)
                 for arg in kinfo.tsfc_kernel_args
             ]
 
@@ -712,6 +728,70 @@ class _WrapperKernelBuilder:
 
         return wrapper_kernels
 
+    def _as_wrapper_kernel_arg(self, tsfc_arg, kernel_data):
+        # TODO Make singledispatchmethod with Python 3.8
+        return _as_wrapper_kernel_arg(tsfc_arg, self, kernel_data)
+
+
+@functools.singledispatch
+def _as_wrapper_kernel_arg(tsfc_arg, self, kernel_data):
+    raise NotImplementedError
+
+
+@_as_wrapper_kernel_arg.register(tsfc_utils.ConstantKernelArg)
+def _(tsfc_arg, self, kernel_data):
+    return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
+
+@_as_wrapper_kernel_arg.register(tsfc_utils.InteriorFacetKernelArg)
+def _(tsfc_arg, self, kernel_data):
+    return op2.DatWrapperKernelArg(2, 1)
+
+
+@_as_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
+@_as_wrapper_kernel_arg.register(tsfc_utils.ExteriorFacetKernelArg)
+def _(tsfc_arg, self, kernel_data):
+    return op2.DatWrapperKernelArg(1, 1)
+
+
+@_as_wrapper_kernel_arg.register(tsfc_utils.CoefficientKernelArg)
+@_as_wrapper_kernel_arg.register(tsfc_utils.CoordinatesKernelArg)
+@_as_wrapper_kernel_arg.register(tsfc_utils.CellSizesKernelArg)
+def _(tsfc_arg, self, kernel_data):
+    dim, arity = split_shape(tsfc_arg.finat_element)
+    return op2.DatWrapperKernelArg(dim, arity)
+
+
+@_as_wrapper_kernel_arg.register(tsfc_utils.LocalTensorKernelArg)
+def _(tsfc_arg, self, kernel_data):
+    if tsfc_arg.rank == 0:
+        return op2.GlobalWrapperKernelArg()
+    elif tsfc_arg.rank == 1 or (tsfc_arg.rank == 2 and self._diagonal):
+        dim, arity = split_shape(tsfc_arg.finat_element)
+        return op2.DatWrapperKernelArg(dim, arity)
+    elif tsfc_arg.rank == 2:
+        rdim, rarity = split_shape(tsfc_arg.relem, combine_dims=True)
+        cdim, carity = split_shape(tsfc_arg.celem, combine_dims=True)
+        return op2.MatWrapperKernelArg(((rdim+cdim,),), (rarity, carity), unroll=kernel_data.unroll)
+    else:
+        raise AssertionError
+
+
+def split_shape(finat_element, combine_dims=False):
+    """Split a FInAT element's index_shape into its 'basis' and 'node' shapes where the
+    former describes the number and layout of nodes and the latter describes the local
+    shape at each node.
+    """
+    if isinstance(finat_element, finat.TensorFiniteElement):
+        if combine_dims:
+            dim = (numpy.prod(finat_element._shape, dtype=int),)
+        else:
+            dim = finat_element._shape
+        arity = numpy.prod(finat_element.index_shape[:-len(finat_element._shape)], dtype=int)
+    else:
+        dim = (1,)
+        arity = numpy.prod(finat_element.index_shape, dtype=int)
+    return dim, arity
+
 
 def _wrapper_kernel_cache_key(form, kernel_data, **kwargs):
     if isinstance(form, ufl.Form):
@@ -728,7 +808,7 @@ def _wrapper_kernel_cache_key(form, kernel_data, **kwargs):
 
 @cachetools.cached(cachetools.LRUCache(maxsize=128), key=_wrapper_kernel_cache_key)
 def _make_wrapper_kernels(*args, **kwargs):
-    return _WrapperKernelBuilder(*args, **kwargs).build()
+    return _AssembleWrapperKernelBuilder(*args, **kwargs).build()
 
 
 @dataclass(frozen=True)
@@ -815,6 +895,7 @@ class ParloopExecutor:
                 _as_parloop_arg(tsfc_arg, self, wrapper_kernel, parloop_data)
                 for tsfc_arg in wrapper_kernel.tsfc_args
             ]
+            breakpoint()
             try:
                 op2.parloop(wrapper_kernel.pyop2_kernel, iterset, parloop_args)
             except MapValueError:

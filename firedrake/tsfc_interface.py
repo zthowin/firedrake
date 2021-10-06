@@ -29,10 +29,10 @@ from pyop2.caching import Cached
 from pyop2 import op2
 from pyop2.mpi import COMM_WORLD, MPI
 
+from firedrake import pyop2_interface, utils
 from firedrake.formmanipulation import split_form
 from firedrake.parameters import parameters as default_parameters
 from firedrake.petsc import PETSc
-from firedrake import utils
 
 # Set TSFC default scalar type at load time
 tsfc_default_parameters["scalar_type"] = utils.ScalarType
@@ -140,7 +140,7 @@ class TSFCKernel(Cached):
             ast = kernel.ast
             # Unwind coefficient numbering
             numbers = tuple(number_map[c] for c in kernel.coefficient_numbers)
-            pyop2_kernel = as_pyop2_local_kernel(kernel.ast, kernel.name, kernel.arguments,
+            pyop2_kernel = pyop2_interface.as_pyop2_local_kernel(kernel.ast, kernel.name, kernel.arguments,
                     flop_count=kernel.flop_count, opts=opts)
             kernels.append(KernelInfo(kernel=pyop2_kernel,
                                       integral_type=kernel.integral_type,
@@ -272,61 +272,3 @@ def _ensure_cachedir(comm=None):
         makedirs(TSFCKernel._cachedir, exist_ok=True)
 
 
-def as_pyop2_local_kernel(ast, name, arguments, access=op2.INC, **kwargs):
-    """TODO"""
-    access_map = {tsfc_utils.Intent.IN: op2.READ, tsfc_utils.Intent.OUT: access}
-    kernel_args = [
-        op2.LocalKernelArg(access_map[arg.intent], arg.dtype)
-        for arg in arguments
-    ]
-    return op2.Kernel(
-        ast,
-        name,
-        kernel_args,
-        requires_zeroed_output_arguments=True,
-        **kwargs
-    )
-
-
-@functools.singledispatch
-def as_pyop2_wrapper_kernel_arg(tsfc_kernel_arg, **kwargs):
-    raise NotImplementedError
-
-
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.ConstantKernelArg)
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.ExteriorFacetKernelArg)
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.InteriorFacetKernelArg)
-def _(tsfc_kernel_arg, **kwargs):
-    return op2.GlobalWrapperKernelArg(tsfc_kernel_arg.shape)
-
-
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalScalarKernelArg)
-def _(tsfc_arg, **kwargs):
-    return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
-
-
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoefficientKernelArg)
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CoordinatesKernelArg)
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.CellSizesKernelArg)
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalVectorKernelArg)
-def _(tsfc_arg, **kwargs):
-    arity = np.prod(tsfc_arg.basis_shape)
-    dim = tsfc_arg.node_shape or (1,)
-    return op2.DatWrapperKernelArg(dim, arity)
-
-
-@as_pyop2_wrapper_kernel_arg.register(tsfc_utils.LocalMatrixKernelArg)
-def _(tsfc_kernel_arg, *, unroll=False):
-    # TODO Clean up
-    if tsfc_kernel_arg.rreal:
-        raise NotImplementedError
-    if tsfc_kernel_arg.creal:
-        arity = np.prod(tsfc_kernel_arg.rbasis_shape, dtype=int)
-        dim = (np.prod(tsfc_kernel_arg.rnode_shape, dtype=int),) or (1,)
-        return op2.MatButActuallyDatWrapperKernelArg(dim, arity)
-    rarity = np.prod(tsfc_kernel_arg.rbasis_shape, dtype=int)
-    carity = np.prod(tsfc_kernel_arg.cbasis_shape, dtype=int)
-    rdim = (np.prod(tsfc_kernel_arg.rnode_shape, dtype=int),) or (1,)
-    cdim = (np.prod(tsfc_kernel_arg.cnode_shape, dtype=int),) or (1,)
-    return op2.MatWrapperKernelArg(((rdim+cdim,),), (rarity, carity), unroll=unroll)

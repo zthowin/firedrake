@@ -176,39 +176,13 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
     elif len(arguments) == 1:
         argument, = arguments
         el = create_element(argument.ufl_element())
-        if isinstance(el, finat.TensorFiniteElement):
-            basis_shape = el.index_shape[:-len(el._shape)]
-            node_shape = el._shape
-        else:
-            basis_shape = el.index_shape
-            node_shape = ()
-        output_arg = tsfc_utils.LocalVectorKernelArg(basis_shape=basis_shape, name="output", dtype=scalar_type, node_shape=node_shape)
+        output_arg = tsfc_utils.LocalVectorKernelArg(el, name="output", dtype=scalar_type)
     elif len(arguments) == 2:
         rargument, cargument = arguments
         rel = create_element(rargument.ufl_element())
         cel = create_element(cargument.ufl_element())
 
-        if isinstance(rel, finat.TensorFiniteElement):
-            rbasis_shape = rel.index_shape[:-len(rel._shape)]
-            rnode_shape = rel._shape
-        else:
-            rbasis_shape = rel.index_shape
-            rnode_shape = ()
-
-        if isinstance(cel, finat.TensorFiniteElement):
-            cbasis_shape = cel.index_shape[:-len(cel._shape)]
-            cnode_shape = cel._shape
-        else:
-            cbasis_shape = cel.index_shape
-            cnode_shape = ()
-
-        output_arg = tsfc_utils.LocalMatrixKernelArg(
-            rbasis_shape=rbasis_shape,
-            cbasis_shape=cbasis_shape,
-            rnode_shape=rnode_shape,
-            cnode_shape=cnode_shape,
-            name="output",
-            dtype=scalar_type)
+        output_arg = tsfc_utils.LocalMatrixKernelArg(rel, cel, name="output", dtype=scalar_type)
     else:
         raise AssertionError
 

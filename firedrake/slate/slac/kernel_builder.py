@@ -17,7 +17,7 @@ from functools import singledispatch
 import firedrake.slate.slate as slate
 from firedrake.slate.slac.tsfc_driver import compile_terminal_form
 
-from tsfc.finatinterface import create_element, split_shape
+from tsfc.finatinterface import create_element
 import tsfc.kernel_interface.firedrake_loopy as tsfc_utils
 from tsfc.loopy import create_domains, assign_dtypes
 
@@ -623,15 +623,15 @@ class LocalLoopyKernelBuilder(object):
             if type(element) == MixedElement:
                 mixed = OrderedDict()
                 for j, c_ in enumerate(c.split()):
-                    basis_shape, node_shape = split_shape(create_element(c_.ufl_element()))
+                    finat_element = create_element(c_.ufl_element())
                     name = "w_{}_{}".format(i, j)
                     info = (name, basis_shape, node_shape)
                     mixed.update({c_: info})
                 coeff_dict[c] = mixed
             else:
-                basis_shape, node_shape = split_shape(create_element(c.ufl_element()))
+                finat_element = create_element(c.ufl_element())
                 name = "w_{}".format(i)
-                coeff_dict[c] = (name, basis_shape, node_shape)
+                coeff_dict[c] = (name, finat_element)
         return coeff_dict
 
     def initialise_terminals(self, var2terminal, coefficients):
@@ -705,9 +705,7 @@ class LocalLoopyKernelBuilder(object):
         import finat
 
         coords_el = tsfc.finatinterface.create_element(coords.ufl_element())
-        basis_shape, node_shape = split_shape(coords_el)
-        args = [tsfc_utils.CoordinatesKernelArg(basis_shape=basis_shape,
-                                                node_shape=node_shape,
+        args = [tsfc_utils.CoordinatesKernelArg(coords_el,
                                                 dtype=self.tsfc_parameters["scalar_type"])]
 
         if self.bag.needs_cell_orientations:
@@ -728,16 +726,16 @@ class LocalLoopyKernelBuilder(object):
 
         for coeff in self.bag.coefficients.values():
             if isinstance(coeff, OrderedDict):
-                for (name, basis_shape, node_shape) in coeff.values():
+                for (name, finat_element) in coeff.values():
                     arg = tsfc_utils.CoefficientKernelArg(
-                        name, basis_shape=basis_shape, node_shape=node_shape,
+                        name, finat_element,
                         dtype=self.tsfc_parameters["scalar_type"]
                     )
                     args.append(arg)
             else:
                 (name, basis_shape, node_shape) = coeff
                 arg = tsfc_utils.CoefficientKernelArg(
-                    name, basis_shape=basis_shape, node_shape=node_shape,
+                    name, finat_element,
                     dtype=self.tsfc_parameters["scalar_type"]
                 )
                 args.append(arg)
