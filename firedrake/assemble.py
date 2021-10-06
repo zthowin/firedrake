@@ -767,9 +767,13 @@ def _(tsfc_arg, self, kernel_data):
 @_as_wrapper_kernel_arg.register(tsfc_utils.LocalTensorKernelArg)
 def _(tsfc_arg, self, kernel_data):
     if tsfc_arg.rank == 0:
-        return op2.GlobalWrapperKernelArg()
-    elif tsfc_arg.rank == 1 or (tsfc_arg.rank == 2 and self._diagonal):
+        return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
+    elif tsfc_arg.rank == 1:
         dim, arity = split_shape(tsfc_arg.finat_element)
+        return op2.DatWrapperKernelArg(dim, arity)
+    elif tsfc_arg.rank == 2 and self._diagonal:
+        finat_element, = set([tsfc_arg.relem, tsfc_arg.celem])
+        dim, arity = split_shape(finat_element)
         return op2.DatWrapperKernelArg(dim, arity)
     elif tsfc_arg.rank == 2:
         rdim, rarity = split_shape(tsfc_arg.relem)
@@ -900,6 +904,7 @@ class ParloopExecutor:
                 _as_parloop_arg(tsfc_arg, self, wrapper_kernel, parloop_data)
                 for tsfc_arg in wrapper_kernel.tsfc_args
             ]
+            breakpoint()
             try:
                 op2.parloop(wrapper_kernel.pyop2_kernel, iterset, parloop_args)
             except MapValueError:
