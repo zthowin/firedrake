@@ -642,6 +642,7 @@ def _make_local_kernels(expr, **kwargs):
     if isinstance(expr, ufl.Form):
         return _AssembleFormLocalKernelBuilder(expr, **kwargs).build()
     elif isinstance(expr, slate.TensorBase):
+        kwargs.pop("diagonal", None)
         return _AssembleSlateLocalKernelBuilder(expr, **kwargs).build()
     else:
         raise AssertionError
