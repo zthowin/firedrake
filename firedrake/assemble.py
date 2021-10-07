@@ -696,7 +696,9 @@ class _AssembleWrapperKernelBuilder:
         self._local_kernel_kwargs = kwargs or {}
 
     def build(self):
-        local_kernels = _make_local_kernels(self._expr, **self._local_kernel_kwargs)
+        local_kernels = _make_local_kernels(
+            self._expr, diagonal=self._diagonal, **self._local_kernel_kwargs
+        )
 
         wrapper_kernels = []
         for local_kernel, kernel_data in zip(local_kernels, self._kernel_data):
