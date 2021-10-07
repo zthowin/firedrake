@@ -234,7 +234,7 @@ def create_assembly_callable(expr, tensor=None, bcs=None, form_compiler_paramete
                              mat_type=mat_type,
                              sub_mat_type=sub_mat_type,
                              diagonal=diagonal,
-                             assembly_type="residual")
+                             assembly_type=AssemblyType.SOLUTION)
 
 
 class _FormAssembler(abc.ABC):
@@ -542,7 +542,7 @@ class _TwoFormAssembler(_FormAssembler):
         return (rlgmap, clgmap), unroll
 
 
-def _assemble_form(form, *args, diagonal=False, **kwargs):
+def _assemble_form(form, *args, assembly_type=AssemblyType.SOLUTION, diagonal=False, **kwargs):
     """Assemble a form.
 
     :arg form:
@@ -560,7 +560,7 @@ def _assemble_form(form, *args, diagonal=False, **kwargs):
     if rank == 0:
         assembler = _ZeroFormAssembler(form, *args, **kwargs)
     elif rank == 1 or (rank == 2 and diagonal):
-        assembler = _OneFormAssembler(form, *args, diagonal=diagonal, **kwargs)
+        assembler = _OneFormAssembler(form, *args, assembly_type=assembly_type, diagonal=diagonal, **kwargs)
     elif rank == 2:
         assembler = _TwoFormAssembler(form, *args, **kwargs)
     else:
@@ -907,7 +907,6 @@ class ParloopExecutor:
                 _as_parloop_arg(tsfc_arg, self, wrapper_kernel, parloop_data)
                 for tsfc_arg in wrapper_kernel.tsfc_args
             ]
-            breakpoint()
             try:
                 op2.parloop(wrapper_kernel.pyop2_kernel, iterset, parloop_args)
             except MapValueError:

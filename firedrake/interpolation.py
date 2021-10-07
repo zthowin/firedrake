@@ -381,14 +381,14 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
                                                 columns_map)
 
         if rows_map is None and columns_map is None:
-            glob = self.handle.getPythonContext().global_
+            glob = tensor.handle.getPythonContext().global_
             wrapper_kernel_args.append(op2.GlobalWrapperKernelArg(glob.dim))
             parloop_args.append(op2.GlobalParloopArg(glob))
         elif rows_map is None or columns_map is None:
-            dat = self.handle.getPythonContext().dat
+            dat = tensor.handle.getPythonContext().dat
             map_ = rows_map or columns_map
             wrapper_kernel_args.append(op2.DatWrapperKernelArg(dat.dim, map_.arity))
-            parloop_args.append(op2.ParloopArg(dat, map_))
+            parloop_args.append(op2.DatParloopArg(dat, map_))
         else:
             wrapper_kernel_args.append(op2.MatWrapperKernelArg(tensor.dims, (rows_map.arity, columns_map.arity)))
             parloop_args.append(op2.MatParloopArg(tensor, (rows_map, columns_map)))
