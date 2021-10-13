@@ -747,12 +747,12 @@ def _(tsfc_arg, self, kernel_data):
 
 @_as_wrapper_kernel_arg.register(tsfc_utils.InteriorFacetKernelArg)
 def _(tsfc_arg, self, kernel_data):
-    return op2.DatWrapperKernelArg(2, 1)
+    return op2.DatWrapperKernelArg((2,), None)
 
 
 @_as_wrapper_kernel_arg.register(tsfc_utils.ExteriorFacetKernelArg)
 def _(tsfc_arg, self, kernel_data):
-    return op2.DatWrapperKernelArg(1, 1)
+    return op2.DatWrapperKernelArg((1,), None)
 
 @_as_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
 def _(tsfc_arg, self, kernel_data):
@@ -763,8 +763,7 @@ def _(tsfc_arg, self, kernel_data):
 @_as_wrapper_kernel_arg.register(tsfc_utils.CoordinatesKernelArg)
 @_as_wrapper_kernel_arg.register(tsfc_utils.CellSizesKernelArg)
 def _(tsfc_arg, self, kernel_data):
-    dim, arity = split_shape(tsfc_arg.finat_element)
-    return op2.DatWrapperKernelArg(dim, arity)
+    return op2.DatWrapperKernelArg(tsfc_arg.tensor_shape, tsfc_arg.node_shape)
 
 
 @_as_wrapper_kernel_arg.register(tsfc_utils.LocalTensorKernelArg)
