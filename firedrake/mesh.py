@@ -13,7 +13,7 @@ import abc
 from mpi4py import MPI
 from firedrake.utils import IntType, RealType
 from pyop2 import op2
-from pyop2.dataset import DataSet
+from pyop2.types.dataset import DataSet
 from pyop2.mpi import COMM_WORLD, dup_comm
 from pyop2.utils import as_tuple, tuplify
 

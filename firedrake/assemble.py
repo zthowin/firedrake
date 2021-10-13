@@ -556,6 +556,11 @@ def _assemble_form(form, *args, assembly_type=AssemblyType.SOLUTION, diagonal=Fa
         Extra keyword arguments to pass to the underlying :class:`_Assembler` instance.
         See :func:`assemble` for more information.
     """
+    # Ensure mesh is 'initialised' as we could have got here without building a
+    # function space (e.g. if integrating a constant).
+    for mesh in form.ufl_domains():
+        mesh.init()
+
     rank = len(form.arguments())
     if rank == 0:
         assembler = _ZeroFormAssembler(form, *args, **kwargs)
@@ -577,11 +582,6 @@ class _AssembleLocalKernelBuilder(pyop2_interface.LocalKernelBuilder):
             topology, = set(d.topology for d in self.expr.ufl_domains())
         except ValueError:
             raise NotImplementedError("All integration domains must share a mesh topology")
-
-        # Ensure mesh is 'initialised' as we could have got here without building a
-        # function space (e.g. if integrating a constant).
-        for m in self.expr.ufl_domains():
-            m.init()
 
         for o in itertools.chain(self.expr.arguments(), self.expr.coefficients()):
             domain = o.ufl_domain()
