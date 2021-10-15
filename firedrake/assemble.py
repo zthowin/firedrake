@@ -1,5 +1,5 @@
 import abc
-from collections import OrderedDict, defaultdict, namedtuple
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from enum import IntEnum, auto
 import functools
@@ -337,7 +337,7 @@ class _OneFormAssembler(_FormAssembler):
         for bc in solving._extract_bcs(bcs):
             if isinstance(bc, EquationBC):
                 bc = bc.extract_form("F")
-            self._apply_bc(bc) 
+            self._apply_bc(bc)
 
     def _apply_bc(self, bc):
         # TODO Maybe this could be a singledispatchmethod?
@@ -400,7 +400,6 @@ class _TwoFormAssembler(_FormAssembler):
         self._appctx = appctx or {}
         self._options_prefix = options_prefix
 
-
     @property
     def result(self):
         if not self._is_matfree:
@@ -412,7 +411,7 @@ class _TwoFormAssembler(_FormAssembler):
             self._tensor.assemble()
 
         if expr is None:
-            assert bcs == None
+            assert bcs is None
             expr = self._expr
             bcs = self._bcs
 
@@ -551,7 +550,7 @@ def _assemble_form(form, *args, assembly_type=AssemblyType.SOLUTION, diagonal=Fa
         Extra positional arguments to pass to the underlying :class:`_Assembler` instance.
         See :func:`assemble` for more information.
     :kwarg diagonal:
-        Flag indicating whether or not we are assembling the diagonal of a matrix. 
+        Flag indicating whether or not we are assembling the diagonal of a matrix.
     :kwargs kwargs:
         Extra keyword arguments to pass to the underlying :class:`_Assembler` instance.
         See :func:`assemble` for more information.
@@ -611,7 +610,6 @@ class _AssembleFormLocalKernelBuilder(_AssembleLocalKernelBuilder):
         )
 
 
-
 class _AssembleSlateLocalKernelBuilder(_AssembleLocalKernelBuilder):
 
     def __init__(self, expr, *, form_compiler_parameters=None):
@@ -622,7 +620,6 @@ class _AssembleSlateLocalKernelBuilder(_AssembleLocalKernelBuilder):
         return slac.compile_expression(
             self.expr, tsfc_parameters=self._form_compiler_parameters
         )
-
 
 
 def _local_kernel_cache_key(form, **kwargs):
@@ -837,9 +834,10 @@ class ParloopExecutor:
         for integral, parloop_data in zip(integrals, self._parloop_data):
             iterset = self._get_iterset(integral, all_integer_subdomain_ids)
             # since we are at 'Firedrake-level' we can inspect Firedrake objects
-            extruded = isinstance(iterset, op2.ExtrudedSet)
-            constant_layers = extruded and iterset.constant_layers
-            subset = isinstance(iterset, op2.Subset)
+            # TODO actually deal with these properties
+            # extruded = isinstance(iterset, op2.ExtrudedSet)
+            # constant_layers = extruded and iterset.constant_layers
+            # subset = isinstance(iterset, op2.Subset)
             kernel_data_ = WrapperKernelData(unroll=parloop_data.unroll)
             wrapper_kernel_data.append(kernel_data_)
 
@@ -850,7 +848,7 @@ class ParloopExecutor:
             **self._wrapper_kernel_kwargs
         )
 
-
+        # TODO deal with these
         # if kinfo.needs_cell_facets:
         #     raise NotImplementedError("Need to fix in Slate")
         #     assert integral_type == "cell"
@@ -866,6 +864,7 @@ class ParloopExecutor:
         for integral, wrapper_kernel, parloop_data in zip(integrals, wrapper_kernels, self._parloop_data):
             # Icky generator so we can access the correct coefficients in order
             kinfo = wrapper_kernel.tsfc_kernel.kinfo
+
             def coeffs():
                 for n, split_map in kinfo.coefficient_map:
                     c = self._expr.coefficients()[n]
@@ -887,7 +886,6 @@ class ParloopExecutor:
 
     def _get_mesh(self, expr_kernel):
         return self._expr.ufl_domains()[expr_kernel.kinfo.domain_number]
-
 
     def _get_iterset(self, integral, all_integer_subdomain_ids):
         expr = self._expr

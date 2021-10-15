@@ -20,7 +20,7 @@ import time
 from hashlib import md5
 
 from firedrake_citations import Citations
-from firedrake import tsfc_interface, pyop2_interface
+from firedrake import pyop2_interface
 from firedrake.tsfc_interface import SplitKernel, KernelInfo, TSFCKernel
 
 from firedrake.slate.slac.kernel_builder import LocalLoopyKernelBuilder, LocalKernelBuilder

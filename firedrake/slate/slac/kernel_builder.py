@@ -50,6 +50,7 @@ class LayerCountKernelArg(kernel_args.KernelArg):
     dtype = np.int32
     loopy_shape = ()
     intent = kernel_args.Intent.IN
+
     # debug, when encountered try to get this right.
     def __init__(self, *_):
         raise NotImplementedError
@@ -71,7 +72,7 @@ class LayerKernelArg(kernel_args.KernelArg):
 
     @property
     def loopy_arg(self):
-        return loopy.ValueArg(self.name, dtype=dtype)
+        return loopy.ValueArg(self.name, dtype=self.dtype)
 
 
 class CellFacetKernelArg(kernel_args.KernelArg):
@@ -613,7 +614,7 @@ class LocalLoopyKernelBuilder(object):
 
     def collect_coefficients(self):
         """ Saves all coefficients of self.expression, where non mixed coefficient
-            are of dict of form {coff: (name, basis_shape, node_shape)} and mixed coefficient are
+            are of dict of form {coeff: (name, basis_shape, node_shape)} and mixed coefficient are
             double dict of form {mixed_coeff: {coeff_per_space: (name, basis_shape, node_shape)}}.
         """
         coeffs = self.expression.coefficients()
@@ -625,8 +626,9 @@ class LocalLoopyKernelBuilder(object):
                 for j, c_ in enumerate(c.split()):
                     finat_element = create_element(c_.ufl_element())
                     name = "w_{}_{}".format(i, j)
-                    info = (name, basis_shape, node_shape)
-                    mixed.update({c_: info})
+                    raise NotImplementedError
+                    # info = (name, basis_shape, node_shape)
+                    # mixed.update({c_: info})
                 coeff_dict[c] = mixed
             else:
                 finat_element = create_element(c.ufl_element())

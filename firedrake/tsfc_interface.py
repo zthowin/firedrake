@@ -8,12 +8,9 @@ import pickle
 
 from hashlib import md5
 from os import path, environ, getuid, makedirs
-import functools
 import os
 import tempfile
 import collections
-
-import numpy as np
 
 import ufl
 from ufl import Form, conj
@@ -23,10 +20,8 @@ from .ufl_expr import TestFunction
 
 from tsfc import compile_form as tsfc_compile_form
 from tsfc.parameters import PARAMETERS as tsfc_default_parameters
-import tsfc.kernel_interface.firedrake_loopy as tsfc_utils
 
 from pyop2.caching import Cached
-from pyop2 import op2
 from pyop2.mpi import COMM_WORLD, MPI
 
 from firedrake import pyop2_interface, utils
@@ -137,11 +132,11 @@ class TSFCKernel(Cached):
         for kernel in tree:
             # Set optimization options
             opts = default_parameters["coffee"]
-            ast = kernel.ast
             # Unwind coefficient numbering
             numbers = tuple(number_map[c] for c in kernel.coefficient_numbers)
-            pyop2_kernel = pyop2_interface.as_pyop2_local_kernel(kernel.ast, kernel.name, kernel.arguments,
-                    flop_count=kernel.flop_count, opts=opts)
+            pyop2_kernel = pyop2_interface.as_pyop2_local_kernel(
+                kernel.ast, kernel.name, kernel.arguments, flop_count=kernel.flop_count, opts=opts
+            )
             kernels.append(KernelInfo(kernel=pyop2_kernel,
                                       integral_type=kernel.integral_type,
                                       oriented=kernel.oriented,
@@ -270,5 +265,3 @@ def _ensure_cachedir(comm=None):
     comm = comm or COMM_WORLD
     if comm.rank == 0:
         makedirs(TSFCKernel._cachedir, exist_ok=True)
-
-

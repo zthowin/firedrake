@@ -234,7 +234,7 @@ def make_interpolator(expr, V, subset, access):
 
 @utils.known_pyop2_safe
 def _interpolator(V, tensor, expr, subset, arguments, access):
-    from firedrake import tsfc_interface, pyop2_interface
+    from firedrake import pyop2_interface
     try:
         if not isinstance(expr, firedrake.Expression):
             to_element = create_element(V.ufl_element())
@@ -304,7 +304,6 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
         kernel = compile_expression_dual_evaluation(expr, to_element,
                                                     domain=source_mesh,
                                                     parameters=parameters)
-        ast = kernel.ast
         oriented = kernel.oriented
         needs_cell_sizes = kernel.needs_cell_sizes
         coefficients = kernel.coefficients

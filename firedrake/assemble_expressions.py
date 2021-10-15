@@ -11,7 +11,6 @@ from gem.impero_utils import compile_gem, preprocess_gem
 from gem.node import MemoizerArg
 from gem.node import traversal as gem_traversal
 from pyop2 import op2
-from pyop2.legacy import DatPayload
 from tsfc import ufl2gem
 from tsfc.loopy import generate
 from tsfc.ufl_utils import ufl_reuse_if_untouched

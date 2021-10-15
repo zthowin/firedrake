@@ -170,9 +170,8 @@ def _form_string_kernel(body, measure, args, **kwargs):
         body = body.replace(var+".dofs", str(ndof))
 
     return op2.Kernel(ast.FunDecl("void", "par_loop_kernel", kargs,
-                                    ast.FlatBlock(body),
-                                    pred=["static"]),
-                        "par_loop_kernel", **kwargs)
+                                  ast.FlatBlock(body),
+                                  pred=["static"]), "par_loop_kernel", **kwargs)
 
 
 @PETSc.Log.EventDecorator()
