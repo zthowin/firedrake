@@ -288,13 +288,13 @@ class Assign(object):
         """Tuple of par_loop arguments for the expression."""
         args = []
         if isinstance(self, AugmentedAssign) or self.lvalue in self.rcoefficients:
-            args.append(DatPayload(self.lvalue.dat, access=op2.RW))
+            args.append(self.lvalue.dat(access=op2.RW))
         else:
-            args.append(DatPayload(self.lvalue.dat, access=op2.WRITE))
+            args.append(self.lvalue.dat(access=op2.WRITE))
         for c in self.rcoefficients:
             if c.dat == self.lvalue.dat:
                 continue
-            args.append(DatPayload(c.dat, access=op2.READ))
+            args.append(c.dat(access=op2.READ))
         return tuple(args)
 
     @cached_property

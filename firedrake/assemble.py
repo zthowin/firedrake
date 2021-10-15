@@ -11,7 +11,7 @@ import cachetools
 import finat
 import firedrake
 import numpy
-import tsfc.kernel_interface.firedrake_loopy as tsfc_utils  # TODO Stopgap
+from tsfc import kernel_args
 import ufl
 from firedrake import (assemble_expressions, matrix, parameters, solving,
                        pyop2_interface, tsfc_interface, utils)
@@ -741,53 +741,26 @@ def _as_wrapper_kernel_arg(tsfc_arg, self, kernel_data):
     raise NotImplementedError
 
 
-@_as_wrapper_kernel_arg.register(tsfc_utils.ConstantKernelArg)
+@_as_wrapper_kernel_arg.register(kernel_args.RankZeroKernelArg)
 def _(tsfc_arg, self, kernel_data):
     return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
 
-@_as_wrapper_kernel_arg.register(tsfc_utils.InteriorFacetKernelArg)
+
+@_as_wrapper_kernel_arg.register(kernel_args.RankOneKernelArg)
 def _(tsfc_arg, self, kernel_data):
-    return op2.DatWrapperKernelArg((2,), None)
+    return op2.DatWrapperKernelArg(tsfc_arg.shape, tsfc_arg.node_shape)
 
 
-@_as_wrapper_kernel_arg.register(tsfc_utils.ExteriorFacetKernelArg)
+@_as_wrapper_kernel_arg.register(kernel_args.RankTwoKernelArg)
 def _(tsfc_arg, self, kernel_data):
-    return op2.DatWrapperKernelArg((1,), None)
+    # PyOP2 matrix objects have scalar dims so we cope with that here...
+    rdim = (numpy.prod(tsfc_arg.rshape, dtype=int),)
+    cdim = (numpy.prod(tsfc_arg.cshape, dtype=int),)
 
-@_as_wrapper_kernel_arg.register(tsfc_utils.CellOrientationsKernelArg)
-def _(tsfc_arg, self, kernel_data):
-    arity, = tsfc_arg.shape
-    return op2.DatWrapperKernelArg((1,), arity)
+    rarity = tsfc_arg.rnode_shape
+    carity = tsfc_arg.cnode_shape
 
-@_as_wrapper_kernel_arg.register(tsfc_utils.CoefficientKernelArg)
-@_as_wrapper_kernel_arg.register(tsfc_utils.CoordinatesKernelArg)
-@_as_wrapper_kernel_arg.register(tsfc_utils.CellSizesKernelArg)
-def _(tsfc_arg, self, kernel_data):
-    return op2.DatWrapperKernelArg(tsfc_arg.tensor_shape, tsfc_arg.node_shape)
-
-
-@_as_wrapper_kernel_arg.register(tsfc_utils.LocalTensorKernelArg)
-def _(tsfc_arg, self, kernel_data):
-    if tsfc_arg.rank == 0:
-        return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
-    elif tsfc_arg.rank == 1:
-        dim, arity = split_shape(tsfc_arg.finat_element)
-        return op2.DatWrapperKernelArg(dim, arity)
-    elif tsfc_arg.rank == 2 and self._diagonal:
-        finat_element, = set([tsfc_arg.relem, tsfc_arg.celem])
-        dim, arity = split_shape(finat_element)
-        return op2.DatWrapperKernelArg(dim, arity)
-    elif tsfc_arg.rank == 2:
-        rdim, rarity = split_shape(tsfc_arg.relem)
-        cdim, carity = split_shape(tsfc_arg.celem)
-
-        # PyOP2 matrix objects have scalar dims so we cope with that here..
-        rdim = (numpy.prod(rdim, dtype=int),)
-        cdim = (numpy.prod(cdim, dtype=int),)
-
-        return op2.MatWrapperKernelArg(((rdim+cdim,),), (rarity, carity), unroll=kernel_data.unroll)
-    else:
-        raise AssertionError
+    return op2.MatWrapperKernelArg(((rdim+cdim,),), (rarity, carity), unroll=kernel_data.unroll)
 
 
 def split_shape(finat_element):
@@ -964,7 +937,7 @@ def _as_parloop_arg(tsfc_arg, self, wrapper_kernel, parloop_data):
     raise NotImplementedError
 
 
-@_as_parloop_arg.register(tsfc_utils.CoordinatesKernelArg)
+@_as_parloop_arg.register(kernel_args.CoordinatesKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
     mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
@@ -972,7 +945,8 @@ def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     map_ = self._get_map(func.function_space(), kinfo.integral_type)
     return op2.DatParloopArg(func.dat, map_)
 
-@_as_parloop_arg.register(tsfc_utils.CellOrientationsKernelArg)
+
+@_as_parloop_arg.register(kernel_args.CellOrientationsKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
     mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
@@ -980,7 +954,8 @@ def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     map_ = self._get_map(func.function_space(), kinfo.integral_type)
     return op2.DatParloopArg(func.dat, map_)
 
-@_as_parloop_arg.register(tsfc_utils.CellSizesKernelArg)
+
+@_as_parloop_arg.register(kernel_args.CellSizesKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
     mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
@@ -988,62 +963,69 @@ def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     map_ = self._get_map(func.function_space(), kinfo.integral_type)
     return op2.DatParloopArg(func.dat, map_)
 
-@_as_parloop_arg.register(tsfc_utils.ExteriorFacetKernelArg)
+
+@_as_parloop_arg.register(kernel_args.ExteriorFacetKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
     return op2.DatParloopArg(mesh.exterior_facets.local_facet_dat)
 
-@_as_parloop_arg.register(tsfc_utils.InteriorFacetKernelArg)
+
+@_as_parloop_arg.register(kernel_args.InteriorFacetKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
     return op2.DatParloopArg(mesh.interior_facets.local_facet_dat)
 
-@_as_parloop_arg.register(tsfc_utils.ConstantKernelArg)
-@_as_parloop_arg.register(tsfc_utils.CoefficientKernelArg)
+
+@_as_parloop_arg.register(kernel_args.ConstantKernelArg)
+def _(tsfc_arg, self, wrapper_kernel, parloop_data):
+    coeff = next(self.coeffs_iterator)
+    return op2.GlobalParloopArg(coeff.dat)
+
+
+@_as_parloop_arg.register(kernel_args.CoefficientKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
 
     coeff = next(self.coeffs_iterator)
-    if tsfc_arg.rank == 0:
-        return op2.GlobalParloopArg(coeff.dat)
-    elif tsfc_arg.rank == 1:
-        return op2.DatParloopArg(coeff.dat, self._get_map(coeff.function_space(), kinfo.integral_type))
-    else:
-        raise AssertionError("TODO")
+    return op2.DatParloopArg(coeff.dat, self._get_map(coeff.function_space(), kinfo.integral_type))
 
-@_as_parloop_arg.register(tsfc_utils.LocalTensorKernelArg)
+
+@_as_parloop_arg.register(kernel_args.ScalarOutputKernelArg)
+def _(tsfc_arg, self, *args):
+    return op2.GlobalParloopArg(self._tensor)
+
+
+@_as_parloop_arg.register(kernel_args.VectorOutputKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, parloop_data):
-    indices = wrapper_kernel.tsfc_kernel.indices
-    tensor =self._tensor
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
-    # TODO New types for Scalar/Vector/Matrix
-    if tsfc_arg.rank == 0:
-        return op2.GlobalParloopArg(tensor)
-    elif tsfc_arg.rank == 1:
-        i, = indices
-        if i is None:
-            return op2.DatParloopArg(
-                self._tensor.dat, self._get_map(self._tensor.function_space(), kinfo.integral_type)
-            )
-        else:
-            return op2.DatParloopArg(
-                self._tensor.dat[i], 
-                self._get_map(self._tensor.function_space()[i], kinfo.integral_type)
-            )
-    elif tsfc_arg.rank == 2:
-        i, j = indices
-        test, trial = tensor.a.arguments()
-        if i is None and j is None:
-            rmap = self._get_map(test.function_space(), kinfo.integral_type)
-            cmap = self._get_map(trial.function_space(), kinfo.integral_type)
-            return op2.MatParloopArg(tensor.M, (rmap, cmap), lgmaps=tuple(parloop_data.lgmaps))
-        else:
-            assert i is not None and j is not None
-            rmap = self._get_map(test.function_space()[i], kinfo.integral_type)
-            cmap = self._get_map(trial.function_space()[j], kinfo.integral_type)
-            return op2.MatParloopArg(tensor.M[i, j], (rmap, cmap), lgmaps=(parloop_data.lgmaps,))
+
+    i, = wrapper_kernel.tsfc_kernel.indices
+    if i is None:
+        return op2.DatParloopArg(
+            self._tensor.dat, self._get_map(self._tensor.function_space(), kinfo.integral_type)
+        )
     else:
-        raise AssertionError(f"Provided rank ({tsfc_arg.rank}) is not in {{0, 1, 2}}")
+        return op2.DatParloopArg(
+            self._tensor.dat[i],
+            self._get_map(self._tensor.function_space()[i], kinfo.integral_type)
+        )
+
+
+@_as_parloop_arg.register(kernel_args.MatrixOutputKernelArg)
+def _(tsfc_arg, self, wrapper_kernel, parloop_data):
+    tensor = self._tensor
+    kinfo = wrapper_kernel.tsfc_kernel.kinfo
+    i, j = wrapper_kernel.tsfc_kernel.indices
+    test, trial = tensor.a.arguments()
+    if i is None and j is None:
+        rmap = self._get_map(test.function_space(), kinfo.integral_type)
+        cmap = self._get_map(trial.function_space(), kinfo.integral_type)
+        return op2.MatParloopArg(tensor.M, (rmap, cmap), lgmaps=tuple(parloop_data.lgmaps))
+    else:
+        assert i is not None and j is not None
+        rmap = self._get_map(test.function_space()[i], kinfo.integral_type)
+        cmap = self._get_map(trial.function_space()[j], kinfo.integral_type)
+        return op2.MatParloopArg(tensor.M[i, j], (rmap, cmap), lgmaps=(parloop_data.lgmaps,))
 
 
 def _execute_parloops(*args, **kwargs):

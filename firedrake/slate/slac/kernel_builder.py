@@ -17,8 +17,8 @@ from functools import singledispatch
 import firedrake.slate.slate as slate
 from firedrake.slate.slac.tsfc_driver import compile_terminal_form
 
+from tsfc import kernel_args
 from tsfc.finatinterface import create_element
-import tsfc.kernel_interface.firedrake_loopy as tsfc_utils
 from tsfc.loopy import create_domains, assign_dtypes
 
 from pytools import UniqueNameGenerator
@@ -43,23 +43,23 @@ Context information for creating coefficient temporaries.
 """
 
 
-class LayerCountKernelArg(tsfc_utils.KernelArg):
+class LayerCountKernelArg(kernel_args.KernelArg):
 
     name = "layer_count"
     shape = (1,)
     dtype = np.int32
     loopy_shape = ()
-    intent = tsfc_utils.Intent.IN
+    intent = kernel_args.Intent.IN
     # debug, when encountered try to get this right.
     def __init__(self, *_):
         raise NotImplementedError
 
 
-class LayerKernelArg(tsfc_utils.KernelArg):
+class LayerKernelArg(kernel_args.KernelArg):
 
     name = "layer"
     dtype = np.int32
-    intent = tsfc_utils.Intent.IN
+    intent = kernel_args.Intent.IN
 
     # debug, when encountered try to get this right.
     def __init__(self, *_):
@@ -74,11 +74,11 @@ class LayerKernelArg(tsfc_utils.KernelArg):
         return loopy.ValueArg(self.name, dtype=dtype)
 
 
-class CellFacetKernelArg(tsfc_utils.KernelArg):
+class CellFacetKernelArg(kernel_args.KernelArg):
 
     name = "cell_facets"
     dtype = np.int8
-    intent = tsfc_utils.Intent.IN
+    intent = kernel_args.Intent.IN
 
     def __init__(self, shape):
         raise NotImplementedError
@@ -514,17 +514,17 @@ class LocalLoopyKernelBuilder(object):
         """
 
         kernel_data = [(mesh.coordinates,
-                        tsfc_utils.CoordinatesKernelArg.name)]
+                        kernel_args.CoordinatesKernelArg.name)]
 
         if kinfo.oriented:
             self.bag.needs_cell_orientations = True
             kernel_data.append((mesh.cell_orientations(),
-                                tsfc_utils.CellOrientationsKernelArg.name))
+                                kernel_args.CellOrientationsKernelArg.name))
 
         if kinfo.needs_cell_sizes:
             self.bag.needs_cell_sizes = True
             kernel_data.append((mesh.cell_sizes,
-                                tsfc_utils.CellSizesKernelArg.name))
+                                kernel_args.CellSizesKernelArg.name))
 
         # Pick the coefficients associated with a Tensor()/TSFC kernel
         tsfc_coefficients = [tsfc_coefficients[i] for i, _ in kinfo.coefficient_map]
@@ -702,39 +702,34 @@ class LocalLoopyKernelBuilder(object):
     def generate_wrapper_kernel_args(self, tensor2temp):
         coords = self.expression.ufl_domain().coordinates
         import tsfc
-        import finat
 
         coords_el = tsfc.finatinterface.create_element(coords.ufl_element())
-        args = [tsfc_utils.CoordinatesKernelArg(coords_el,
-                                                dtype=self.tsfc_parameters["scalar_type"])]
+        args = [kernel_args.CoordinatesKernelArg(coords_el,
+                                                 dtype=self.tsfc_parameters["scalar_type"])]
 
         if self.bag.needs_cell_orientations:
             raise NotImplementedError
             ori_extent = self.extent(self.expression.ufl_domain().cell_orientations())
-            args.append(tsfc_utils.CellOrientationsKernelArg(
-                    shape=ori_extent, dtype=self.tsfc_parameters["scalar_type"]
-                )
-            )
+            args.append(kernel_args.CellOrientationsKernelArg(
+                        shape=ori_extent, dtype=self.tsfc_parameters["scalar_type"]))
 
         if self.bag.needs_cell_sizes:
             raise NotImplementedError
             siz_extent = self.extent(self.expression.ufl_domain().cell_sizes)
-            args.append(tsfc_utils.CellSizesKernelArg(
-                    shape=siz_extent, dtype=self.tsfc_parameters["scalar_type"]
-                )
-            )
+            args.append(kernel_args.CellSizesKernelArg(
+                        shape=siz_extent, dtype=self.tsfc_parameters["scalar_type"]))
 
         for coeff in self.bag.coefficients.values():
             if isinstance(coeff, OrderedDict):
                 for (name, finat_element) in coeff.values():
-                    arg = tsfc_utils.CoefficientKernelArg(
+                    arg = kernel_args.CoefficientKernelArg(
                         name, finat_element,
                         dtype=self.tsfc_parameters["scalar_type"]
                     )
                     args.append(arg)
             else:
                 (name, basis_shape, node_shape) = coeff
-                arg = tsfc_utils.CoefficientKernelArg(
+                arg = kernel_args.CoefficientKernelArg(
                     name, finat_element,
                     dtype=self.tsfc_parameters["scalar_type"]
                 )

@@ -1,13 +1,13 @@
 import abc
-import dataclasses as dc
+from dataclasses import dataclass
 
-from tsfc.kernel_interface import firedrake_loopy as tsfc_utils
+from tsfc import kernel_args
 from pyop2 import op2
 
 from firedrake import tsfc_interface
 
 
-@dc.dataclass(frozen=True)
+@dataclass(frozen=True)
 class LocalKernel:
 
     tsfc_kernel: tsfc_interface.SplitKernel
@@ -25,15 +25,7 @@ class LocalKernelBuilder:
 
 def as_pyop2_local_kernel(ast, name, arguments, access=op2.INC, **kwargs):
     """TODO"""
-    access_map = {tsfc_utils.Intent.IN: op2.READ, tsfc_utils.Intent.OUT: access}
-    kernel_args = [
-        op2.LocalKernelArg(access_map[arg.intent], arg.dtype)
-        for arg in arguments
-    ]
-    return op2.Kernel(
-        ast,
-        name,
-        kernel_args,
-        requires_zeroed_output_arguments=True,
-        **kwargs
-    )
+    access_map = {kernel_args.Intent.IN: op2.READ, kernel_args.Intent.OUT: access}
+    knl_args = [op2.LocalKernelArg(access_map[arg.intent], arg.dtype)
+                for arg in arguments]
+    return op2.Kernel(ast, name, knl_args, requires_zeroed_output_arguments=True, **kwargs)

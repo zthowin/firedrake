@@ -35,6 +35,7 @@ from firedrake.utils import complex_mode, ScalarType_c, as_cstr
 from ufl.log import GREEN
 from gem.utils import groupby
 from gem import impero_utils
+from tsfc import kernel_args
 
 from itertools import chain
 
@@ -169,20 +170,18 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
 
     # TODO Clean up A LOT
     from tsfc.finatinterface import create_element
-    import finat
     arguments = slate_expr.arguments()
     if len(arguments) == 0:
         raise NotImplementedError
     elif len(arguments) == 1:
         argument, = arguments
         el = create_element(argument.ufl_element())
-        output_arg = tsfc_utils.LocalVectorKernelArg(el, name="output", dtype=scalar_type)
+        output_arg = kernel_args.VectorOutputKernelArg(el, dtype=scalar_type)
     elif len(arguments) == 2:
         rargument, cargument = arguments
         rel = create_element(rargument.ufl_element())
         cel = create_element(cargument.ufl_element())
-
-        output_arg = tsfc_utils.LocalMatrixKernelArg(rel, cel, name="output", dtype=scalar_type)
+        output_arg = kernel_args.MatrixOutputKernelArg(rel, cel, dtype=scalar_type)
     else:
         raise AssertionError
 
@@ -654,23 +653,6 @@ def parenthesize(arg, prec=None, parent=None):
     return "(%s)" % arg
 
 
-# TODO Put somewhere sensible
-import tsfc.kernel_interface.firedrake_loopy as tsfc_utils
-
-# TODO can delete
-class OutputKernelArg(tsfc_utils.KernelArg):
-
-    name = "output"
-    intent = tsfc_utils.Intent.OUT
-
-    def __init__(self, shape, dtype):
-        super().__init__(shape=shape, dtype=dtype)
-
-    @property
-    def loopy_arg(self):
-        return loopy.GlobalArg(self.name, shape=self.shape, dtype=self.dtype, is_output=True, is_input=True)
-
-
 def gem_to_loopy(gem_expr, var2terminal, scalar_type, output_arg):
     """ Method encapsulating stage 2.
     Converts the gem expression dag into imperoc first, and then further into loopy.
@@ -684,7 +666,7 @@ def gem_to_loopy(gem_expr, var2terminal, scalar_type, output_arg):
     args = ([output_arg.loopy_arg]
             + [loopy.GlobalArg(var.name, shape=var.shape, dtype=scalar_type)
                for var in var2terminal.keys()])
-    ret_vars = [gem.Indexed(gem.Variable("output", shape), idx)]
+    ret_vars = [gem.Indexed(gem.Variable("A", shape), idx)]
 
     preprocessed_gem_expr = impero_utils.preprocess_gem([indexed_gem_expr])
 
