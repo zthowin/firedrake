@@ -6,7 +6,8 @@ on:
     branches:
       - master
   # And all pull requests
-  pull_request:
+  # Disable for now
+  # pull_request:
 
 
 jobs:
