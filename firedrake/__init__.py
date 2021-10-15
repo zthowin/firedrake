@@ -74,7 +74,6 @@ from firedrake.bcs import *
 from firedrake.checkpointing import *
 from firedrake.constant import *
 from firedrake.exceptions import *
-from firedrake.expression import *
 from firedrake.function import *
 from firedrake.functionspace import *
 from firedrake.interpolation import *
@@ -131,17 +130,17 @@ try:
     if "openblas" in _blas_lib_path:
         _method_name = "openblas_set_num_threads"
     elif "libmkl" in _blas_lib_path:
-        _method_name = "mkl_set_num_threads"
+        _method_name = "MKL_Set_Num_Threads"
 
     if _method_name:
         try:
             getattr(_blas_lib, _method_name)(1)
         except AttributeError:
-            warning("Cannot set number of threads in BLAS library!")
+            info("Cannot set number of threads in BLAS library")
 except OSError:
-    warning("Could not load BLAS library!")
+    info("Cannot set number of threads in BLAS library because the library could not be loaded")
 except TypeError:
-    warning("Could not find BLAS library!")
+    info("Cannot set number of threads in BLAS library because the library could not be found")
 
 # OMP_NUM_THREADS can be set to a comma-separated list of positive integers
 try:

@@ -618,7 +618,7 @@ class _AssembleSlateLocalKernelBuilder(_AssembleLocalKernelBuilder):
 
     def compile_expr(self):
         return slac.compile_expression(
-            self.expr, tsfc_parameters=self._form_compiler_parameters
+            self.expr, compiler_parameters=self._form_compiler_parameters
         )
 
 
