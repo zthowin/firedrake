@@ -223,7 +223,6 @@ def make_interpolator(expr, V, subset, access):
 
 @utils.known_pyop2_safe
 def _interpolator(V, tensor, expr, subset, arguments, access):
-    from firedrake import pyop2_interface
     try:
         expr = ufl.as_ufl(expr)
     except ufl.UFLException:
@@ -274,16 +273,6 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
     parameters = {}
     parameters['scalar_type'] = utils.ScalarType
 
-    cell_set = target_mesh.cell_set
-    if subset is not None:
-        assert subset.superset == cell_set
-        cell_set = subset
-
-    # kwargs for wrapper kernel
-    extruded = isinstance(cell_set, op2.ExtrudedSet)
-    constant_layers = extruded and cell_set.constant_layers
-    subset = isinstance(cell_set, op2.Subset)
-
     # We need to pass both the ufl element and the finat element
     # because the finat elements might not have the right mapping
     # (e.g. L2 Piola, or tensor element with symmetries)
@@ -294,12 +283,19 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
                                                 V.ufl_element(),
                                                 domain=source_mesh,
                                                 parameters=parameters)
-
+    ast = kernel.ast
     oriented = kernel.oriented
     needs_cell_sizes = kernel.needs_cell_sizes
     coefficients = kernel.coefficients
     first_coeff_fake_coords = kernel.first_coefficient_fake_coords
     name = kernel.name
+    kernel = op2.Kernel(ast, name, requires_zeroed_output_arguments=True,
+                        flop_count=kernel.flop_count)
+    cell_set = target_mesh.cell_set
+    if subset is not None:
+        assert subset.superset == cell_set
+        cell_set = subset
+    parloop_args = [kernel, cell_set]
 
     if first_coeff_fake_coords:
         # Replace with real source mesh coordinates
@@ -336,16 +332,10 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
     else:
         copyin = ()
         copyout = ()
-
-    wrapper_kernel_args = []
-    parloop_args = []
     if isinstance(tensor, op2.Global):
-        wrapper_kernel_args.append(op2.GlobalWrapperKernelArg(tensor.dim))
-        parloop_args.append(op2.GlobalParloopArg(tensor))
+        parloop_args.append(tensor(access))
     elif isinstance(tensor, op2.Dat):
-        map_ = V.cell_node_map()
-        wrapper_kernel_args.append(op2.DatWrapperKernelArg(tensor.dim, map_.arity))
-        parloop_args.append(op2.DatParloopArg(tensor, map_))
+        parloop_args.append(tensor(access, V.cell_node_map()))
     else:
         assert access == op2.WRITE  # Other access descriptors not done for Matrices.
         rows_map = V.cell_node_map()
@@ -356,30 +346,13 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
             # function space nodes on the source mesh.
             columns_map = compose_map_and_cache(target_mesh.cell_parent_cell_map,
                                                 columns_map)
-
-        if rows_map is None and columns_map is None:
-            glob = tensor.handle.getPythonContext().global_
-            wrapper_kernel_args.append(op2.GlobalWrapperKernelArg(glob.dim))
-            parloop_args.append(op2.GlobalParloopArg(glob))
-        elif rows_map is None or columns_map is None:
-            dat = tensor.handle.getPythonContext().dat
-            map_ = rows_map or columns_map
-            wrapper_kernel_args.append(op2.DatWrapperKernelArg(dat.dim, map_.arity))
-            parloop_args.append(op2.DatParloopArg(dat, map_))
-        else:
-            wrapper_kernel_args.append(op2.MatWrapperKernelArg(tensor.dims, (rows_map.arity, columns_map.arity)))
-            parloop_args.append(op2.MatParloopArg(tensor, (rows_map, columns_map)))
-
+        parloop_args.append(tensor(op2.WRITE, (rows_map, columns_map)))
     if oriented:
         co = target_mesh.cell_orientations()
-        map_ = co.cell_node_map()
-        wrapper_kernel_args.append(op2.DatWrapperKernelArg(co.dat.dim, map_.arity))
-        parloop_args.append(op2.DatParloopArg(co.dat, map_))
+        parloop_args.append(co.dat(op2.READ, co.cell_node_map()))
     if needs_cell_sizes:
         cs = target_mesh.cell_sizes
-        map_ = cs.cell_node_map()
-        wrapper_kernel_args.append(op2.DatWrapperKernelArg(cs.dat.dim, map_.arity))
-        parloop_args.append(op2.DatParloopArg(cs.dat, cs.cell_node_map()))
+        parloop_args.append(cs.dat(op2.READ, cs.cell_node_map()))
     for coefficient in coefficients:
         coeff_mesh = coefficient.ufl_domain()
         if coeff_mesh is target_mesh or not coeff_mesh:
@@ -398,29 +371,9 @@ def _interpolator(V, tensor, expr, subset, arguments, access):
                 m_ = coefficient.cell_node_map()
         else:
             raise ValueError("Have coefficient with unexpected mesh")
+        parloop_args.append(coefficient.dat(op2.READ, m_))
 
-        if isinstance(coefficient.dat, op2.Global):
-            wrapper_kernel_args.append(op2.GlobalWrapperKernelArg(coefficient.dat.dim))
-            parloop_args.append(op2.GlobalParloopArg(coefficient.dat))
-        elif isinstance(coefficient.dat, op2.Dat):
-            arity = m_.arity if m_ else None
-            wrapper_kernel_args.append(op2.DatWrapperKernelArg(coefficient.dat.dim, arity))
-            parloop_args.append(op2.DatParloopArg(coefficient.dat, m_))
-        else:
-            raise AssertionError
-
-    local_kernel = pyop2_interface.as_pyop2_local_kernel(
-        kernel.ast, kernel.name, kernel.arguments, access
-    )
-    wrapper_kernel = op2.WrapperKernel(
-        local_kernel,
-        wrapper_kernel_args,
-        extruded=extruded,
-        constant_layers=constant_layers,
-        subset=subset
-    )
-
-    parloop_compute_callable = partial(op2.parloop, wrapper_kernel, cell_set, parloop_args)
+    parloop_compute_callable = partial(op2.par_loop, *parloop_args)
     if isinstance(tensor, op2.Mat):
         return parloop_compute_callable, tensor.assemble
     else:

@@ -745,7 +745,8 @@ def _(tsfc_arg, self, kernel_data):
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankOneKernelArg)
 def _(tsfc_arg, self, kernel_data):
-    return op2.DatWrapperKernelArg(tsfc_arg.shape, tsfc_arg.node_shape)
+    map_arg = op2.MatWrapperKernelArg(tsfc_arg.node_shape)
+    return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
 
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankTwoKernelArg)
