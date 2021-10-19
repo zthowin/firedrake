@@ -745,7 +745,7 @@ def _(tsfc_arg, self, kernel_data):
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankOneKernelArg)
 def _(tsfc_arg, self, kernel_data):
-    map_arg = op2.MatWrapperKernelArg(tsfc_arg.node_shape)
+    map_arg = op2.MapWrapperKernelArg(tsfc_arg.function_space_id, tsfc_arg.node_shape)
     return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
 
 
@@ -755,10 +755,10 @@ def _(tsfc_arg, self, kernel_data):
     rdim = (numpy.prod(tsfc_arg.rshape, dtype=int),)
     cdim = (numpy.prod(tsfc_arg.cshape, dtype=int),)
 
-    rarity = tsfc_arg.rnode_shape
-    carity = tsfc_arg.cnode_shape
+    rmap_arg = op2.MapWrapperKernelArg(tsfc_arg.rfunction_space_id, tsfc_arg.rnode_shape)
+    cmap_arg = op2.MapWrapperKernelArg(tsfc_arg.cfunction_space_id, tsfc_arg.cnode_shape)
 
-    return op2.MatWrapperKernelArg(((rdim+cdim,),), (rarity, carity), unroll=kernel_data.unroll)
+    return op2.MatWrapperKernelArg(((rdim+cdim,),), (rmap_arg, cmap_arg), unroll=kernel_data.unroll)
 
 
 def split_shape(finat_element):
