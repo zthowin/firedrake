@@ -705,7 +705,7 @@ class _AssembleWrapperKernelBuilder:
             kinfo = local_kernel.tsfc_kernel.kinfo
 
             wrapper_kernel_args = [
-                self._as_wrapper_kernel_arg(arg, kernel_data)
+                self._as_wrapper_kernel_arg(arg, kernel_data, kinfo.integral_type)
                 for arg in kinfo.tsfc_kernel_args
             ]
 
@@ -730,30 +730,36 @@ class _AssembleWrapperKernelBuilder:
 
         return wrapper_kernels
 
-    def _as_wrapper_kernel_arg(self, tsfc_arg, kernel_data):
+    def _as_wrapper_kernel_arg(self, tsfc_arg, kernel_data, integral_type):
         # TODO Make singledispatchmethod with Python 3.8
-        return _as_wrapper_kernel_arg(tsfc_arg, self, kernel_data)
+        return _as_wrapper_kernel_arg(tsfc_arg, self, kernel_data, integral_type)
 
 
 @functools.singledispatch
-def _as_wrapper_kernel_arg(tsfc_arg, self, kernel_data):
+def _as_wrapper_kernel_arg(tsfc_arg, self, kernel_data, integral_type):
     raise NotImplementedError
 
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankZeroKernelArg)
-def _(tsfc_arg, self, kernel_data):
+def _(tsfc_arg, self, kernel_data, integral_type):
     return op2.GlobalWrapperKernelArg(tsfc_arg.shape)
 
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankOneKernelArg)
-def _(tsfc_arg, self, kernel_data):
-    map_id = _get_map_id(tsfc_arg._elem._elem)
+def _(tsfc_arg, self, kernel_data, integral_type):
+    map_id = _get_map_id(tsfc_arg._elem._elem, integral_type)
     map_arg = op2.MapWrapperKernelArg(map_id, tsfc_arg.node_shape)
     return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
 
 
+@_as_wrapper_kernel_arg.register(kernel_args.FacetKernelArg)
+def _(tsfc_arg, self, kernel_data, integral_type):
+    # These are directly addressed (no map)
+    return op2.DatWrapperKernelArg(tsfc_arg.shape)
+
+
 @_as_wrapper_kernel_arg.register(kernel_args.CellOrientationsKernelArg)
-def _(tsfc_arg, self, kernel_data):
+def _(tsfc_arg, self, kernel_data, integral_type):
     # TODO Here we assume:
     # - There will only ever be one cell orientations map
     # - This map is not used by any other data structures
@@ -762,9 +768,9 @@ def _(tsfc_arg, self, kernel_data):
 
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankTwoKernelArg)
-def _(tsfc_arg, self, kernel_data):
-    rmap_id = _get_map_id(tsfc_arg._relem._elem)
-    cmap_id = _get_map_id(tsfc_arg._celem._elem)
+def _(tsfc_arg, self, kernel_data, integral_type):
+    rmap_id = _get_map_id(tsfc_arg._relem._elem, integral_type)
+    cmap_id = _get_map_id(tsfc_arg._celem._elem, integral_type)
 
     rmap_arg = op2.MapWrapperKernelArg(rmap_id, tsfc_arg.rnode_shape)
     cmap_arg = op2.MapWrapperKernelArg(cmap_id, tsfc_arg.cnode_shape)
@@ -776,7 +782,7 @@ def _(tsfc_arg, self, kernel_data):
     return op2.MatWrapperKernelArg(((rdim+cdim,),), (rmap_arg, cmap_arg), unroll=kernel_data.unroll)
 
 
-def _get_map_id(finat_element):
+def _get_map_id(finat_element, integral_type):
     """Return a key that is used to check if we reuse maps.
 
     functionspacedata.py does the same thing.
@@ -793,6 +799,21 @@ def _get_map_id(finat_element):
         eperm_key = None
     return entity_dofs_key(entity_dofs), real_tensorproduct, eperm_key
 
+
+def _get_map_type(integral_type):
+    if integral_type in (
+        "cell",
+        "exterior_facet_top",
+        "exterior_facet_bottom",
+        "interior_facet_horiz"
+    ):
+        return "cell"
+    elif integral_type in ("exterior_facet", "exterior_facet_vert"):
+        return "exterior_facet"
+    elif integral_type in ("interior_facet", "interior_facet_vert"):
+        return "interior_facet"
+    else:
+        raise AssertionError
 
 
 def _wrapper_kernel_cache_key(form, kernel_data, **kwargs):
@@ -932,19 +953,16 @@ class ParloopExecutor:
         """TODO"""
         assert isinstance(func_space, ufl.FunctionSpace)
 
-        if integral_type in (
-            "cell",
-            "exterior_facet_top",
-            "exterior_facet_bottom",
-            "interior_facet_horiz"
-        ):
+        map_type = _get_map_type(integral_type)
+
+        if map_type == "cell":
             return func_space.cell_node_map()
-        elif integral_type in ("exterior_facet", "exterior_facet_vert"):
+        elif map_type == "exterior_facet":
             return func_space.exterior_facet_node_map()
-        elif integral_type in ("interior_facet", "interior_facet_vert"):
+        elif map_type == "interior_facet":
             return func_space.interior_facet_node_map()
         else:
-            raise AssertionError(f"Unknown integral type '{integral_type}'")
+            raise AssertionError
 
 
 # TODO Make into a singledispatchmethod when we have Python 3.8
