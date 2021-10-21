@@ -465,7 +465,9 @@ class FunctionSpaceData(object):
         # conditions.
         # Map caches are specific to a cell_node_list, which is keyed by entity_dof
         self.map_cache = get_map_cache(mesh, (edofs_key, real_tensorproduct, eperm_key))
-        if isinstance(finat_element, finat.TensorProductElement):
+        # TODO This is quite a janky way to check this. Could just look at type(mesh) or
+        # the ufl domain if I add the right metadata.
+        if isinstance(mesh, mesh_mod.ExtrudedMeshTopology):
             self.offset = get_dof_offset(mesh, (edofs_key, real_tensorproduct), finat_element, entity_dofs, finat_element.space_dimension())
         else:
             self.offset = None

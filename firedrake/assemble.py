@@ -191,7 +191,6 @@ def allocate_matrix(
                                          for get_map, regions in domains.items()
                                          if regions))
     try:
-        import pdb; pdb.set_trace()
         sparsity = op2.Sparsity((test.function_space().dof_dset,
                                  trial.function_space().dof_dset),
                                 tuple(map_pairs),
