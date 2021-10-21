@@ -16,6 +16,7 @@ vs VectorElement) can share the PyOP2 Set and Map data.
 
 import numpy
 import ufl
+import FIAT
 import finat
 from decorator import decorator
 from functools import partial
@@ -410,18 +411,20 @@ def preprocess_finat_element(finat_element):
     :returns: A tuple of the FInAT element, entity_dofs, nodes_per_entity,
         and real_tensorproduct derived from ufl_element.
     """
-    if type(ufl_element) is ufl.MixedElement:
+    if (isinstance(finat_element, finat.EnrichedElement)
+            and isinstance(finat_element.fiat_equivalent, FIAT.MixedElement)):
         raise ValueError("Can't create FunctionSpace for MixedElement")
     # Support foo x Real tensorproduct elements
     real_tensorproduct = False
-    scalar_element = ufl_element
-    if isinstance(ufl_element, (ufl.VectorElement, ufl.TensorElement)):
-        scalar_element = ufl_element.sub_elements()[0]
-    if isinstance(scalar_element, ufl.TensorProductElement):
+    scalar_element = finat_element
+    if isinstance(finat_element, finat.TensorFiniteElement):
+        scalar_element = finat_element.base_element
+    if isinstance(scalar_element, finat.TensorProductElement):
+        raise NotImplementedError
         a, b = scalar_element.sub_elements()
         real_tensorproduct = b.family() == 'Real'
     entity_dofs = finat_element.entity_dofs()
-    return (finat_element, entity_dofs, real_tensorproduct)
+    return entity_dofs, real_tensorproduct
 
 
 class FunctionSpaceData(object):

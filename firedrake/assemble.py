@@ -18,6 +18,8 @@ from firedrake import (assemble_expressions, matrix, parameters, solving,
 from firedrake.adjoint import annotate_assemble
 from firedrake.bcs import DirichletBC, EquationBC, EquationBCSplit
 from firedrake.formmanipulation import split_form
+from firedrake.functionspacedata import (preprocess_finat_element, entity_dofs_key,
+                                         entity_permutations_key)
 from firedrake.petsc import PETSc
 from firedrake.slate import slac, slate
 from firedrake.utils import ScalarType
@@ -745,36 +747,52 @@ def _(tsfc_arg, self, kernel_data):
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankOneKernelArg)
 def _(tsfc_arg, self, kernel_data):
-    # Since we use a cache when forming FInAT elements in TSFC we can get away with
-    # using the id(element) as the map ID.
-    map_arg = op2.MapWrapperKernelArg(tsfc_arg._elem._elem, tsfc_arg.node_shape)
+    map_id = _get_map_id(tsfc_arg._elem._elem)
+    map_arg = op2.MapWrapperKernelArg(map_id, tsfc_arg.node_shape)
+    return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
+
+
+@_as_wrapper_kernel_arg.register(kernel_args.CellOrientationsKernelArg)
+def _(tsfc_arg, self, kernel_data):
+    # TODO Here we assume:
+    # - There will only ever be one cell orientations map
+    # - This map is not used by any other data structures
+    map_arg = op2.MapWrapperKernelArg("cell_orientations", tsfc_arg.node_shape)
     return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
 
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankTwoKernelArg)
 def _(tsfc_arg, self, kernel_data):
+    rmap_id = _get_map_id(tsfc_arg._relem._elem)
+    cmap_id = _get_map_id(tsfc_arg._celem._elem)
+
+    rmap_arg = op2.MapWrapperKernelArg(rmap_id, tsfc_arg.rnode_shape)
+    cmap_arg = op2.MapWrapperKernelArg(cmap_id, tsfc_arg.cnode_shape)
+
     # PyOP2 matrix objects have scalar dims so we cope with that here...
     rdim = (numpy.prod(tsfc_arg.rshape, dtype=int),)
     cdim = (numpy.prod(tsfc_arg.cshape, dtype=int),)
 
-    rmap_arg = op2.MapWrapperKernelArg(id(tsfc_arg._relem._elem), tsfc_arg.rnode_shape)
-    cmap_arg = op2.MapWrapperKernelArg(id(tsfc_arg._celem._elem), tsfc_arg.cnode_shape)
-
     return op2.MatWrapperKernelArg(((rdim+cdim,),), (rmap_arg, cmap_arg), unroll=kernel_data.unroll)
 
 
-def split_shape(finat_element):
-    """Split a FInAT element's index_shape into its 'basis' and 'node' shapes where the
-    former describes the number and layout of nodes and the latter describes the local
-    shape at each node.
+def _get_map_id(finat_element):
+    """Return a key that is used to check if we reuse maps.
+
+    functionspacedata.py does the same thing.
     """
+    # TODO need to look at measure...
+    # functionspacedata does some magic and replaces tensorelements with base
     if isinstance(finat_element, finat.TensorFiniteElement):
-        dim = finat_element._shape
-        arity = numpy.prod(finat_element.index_shape[:-len(dim)], dtype=int)
-    else:
-        dim = (1,)
-        arity = numpy.prod(finat_element.index_shape, dtype=int)
-    return dim, arity
+        finat_element = finat_element.base_element
+
+    entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
+    try:
+        eperm_key = entity_permutations_key(finat_element.entity_permutations)
+    except NotImplementedError:
+        eperm_key = None
+    return entity_dofs_key(entity_dofs), real_tensorproduct, eperm_key
+
 
 
 def _wrapper_kernel_cache_key(form, kernel_data, **kwargs):
