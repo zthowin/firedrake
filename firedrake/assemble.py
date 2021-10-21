@@ -17,6 +17,7 @@ from firedrake import (assemble_expressions, matrix, parameters, solving,
                        pyop2_interface, tsfc_interface, utils)
 from firedrake.adjoint import annotate_assemble
 from firedrake.bcs import DirichletBC, EquationBC, EquationBCSplit
+from firedrake.extrusion_utils import calc_offset
 from firedrake.formmanipulation import split_form
 from firedrake.functionspacedata import (preprocess_finat_element, entity_dofs_key,
                                          entity_permutations_key)
@@ -190,6 +191,7 @@ def allocate_matrix(
                                          for get_map, regions in domains.items()
                                          if regions))
     try:
+        import pdb; pdb.set_trace()
         sparsity = op2.Sparsity((test.function_space().dof_dset,
                                  trial.function_space().dof_dset),
                                 tuple(map_pairs),
@@ -748,7 +750,18 @@ def _(tsfc_arg, self, kernel_data, integral_type):
 @_as_wrapper_kernel_arg.register(kernel_args.RankOneKernelArg)
 def _(tsfc_arg, self, kernel_data, integral_type):
     map_id = _get_map_id(tsfc_arg._elem._elem, integral_type)
-    map_arg = op2.MapWrapperKernelArg(map_id, tsfc_arg.node_shape)
+
+    finat_element = tsfc_arg._elem._elem
+    if isinstance(finat_element, finat.TensorFiniteElement):
+        finat_element = finat_element.base_element
+    entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
+    # offset only valid for extruded
+    if isinstance(finat_element, finat.TensorProductElement):
+        offset = calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct)
+    else:
+        offset = None
+
+    map_arg = op2.MapWrapperKernelArg(map_id, tsfc_arg.node_shape, offset)
     return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
 
 
@@ -772,8 +785,30 @@ def _(tsfc_arg, self, kernel_data, integral_type):
     rmap_id = _get_map_id(tsfc_arg._relem._elem, integral_type)
     cmap_id = _get_map_id(tsfc_arg._celem._elem, integral_type)
 
-    rmap_arg = op2.MapWrapperKernelArg(rmap_id, tsfc_arg.rnode_shape)
-    cmap_arg = op2.MapWrapperKernelArg(cmap_id, tsfc_arg.cnode_shape)
+    ###
+
+    finat_element = tsfc_arg._relem._elem
+    entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
+    # offset only valid for extruded
+    if isinstance(finat_element, finat.TensorProductElement):
+        roffset = calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct)
+    else:
+        roffset = None
+
+    ###
+
+    finat_element = tsfc_arg._celem._elem
+    entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
+    # offset only valid for extruded
+    if isinstance(finat_element, finat.TensorProductElement):
+        coffset = calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct)
+    else:
+        coffset = None
+
+    ###
+
+    rmap_arg = op2.MapWrapperKernelArg(rmap_id, tsfc_arg.rnode_shape, roffset)
+    cmap_arg = op2.MapWrapperKernelArg(cmap_id, tsfc_arg.cnode_shape, coffset)
 
     # PyOP2 matrix objects have scalar dims so we cope with that here...
     rdim = (numpy.prod(tsfc_arg.rshape, dtype=int),)
@@ -877,10 +912,11 @@ class ParloopExecutor:
             iterset = self._get_iterset(integral, all_integer_subdomain_ids)
             # since we are at 'Firedrake-level' we can inspect Firedrake objects
             # TODO actually deal with these properties
-            # extruded = isinstance(iterset, op2.ExtrudedSet)
-            # constant_layers = extruded and iterset.constant_layers
-            # subset = isinstance(iterset, op2.Subset)
-            kernel_data_ = WrapperKernelData(unroll=parloop_data.unroll)
+            extruded = isinstance(iterset, op2.ExtrudedSet)
+            constant_layers = extruded and iterset.constant_layers
+            subset = isinstance(iterset, op2.Subset)
+            kernel_data_ = WrapperKernelData(extruded=extruded, constant_layers=constant_layers,
+                                             subset=subset, unroll=parloop_data.unroll)
             wrapper_kernel_data.append(kernel_data_)
 
         wrapper_kernels = _make_wrapper_kernels(

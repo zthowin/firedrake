@@ -1143,25 +1143,25 @@ class ExtrudedMeshTopology(MeshTopology):
             nodes_per_entity = sum(nodes[:, i]*(self.layers - i) for i in range(2))
             return super(ExtrudedMeshTopology, self).node_classes(nodes_per_entity)
 
-    @PETSc.Log.EventDecorator()
-    def make_offset(self, entity_dofs, ndofs, real_tensorproduct=False):
-        """Returns the offset between the neighbouring cells of a
-        column for each DoF.
+    # @PETSc.Log.EventDecorator()
+    # def make_offset(self, entity_dofs, ndofs, real_tensorproduct=False):
+    #     """Returns the offset between the neighbouring cells of a
+    #     column for each DoF.
 
-        :arg entity_dofs: FInAT element entity DoFs
-        :arg ndofs: number of DoFs in the FInAT element
-        """
-        entity_offset = [0] * (1 + self._base_mesh.cell_dimension())
-        for (b, v), entities in entity_dofs.items():
-            entity_offset[b] += len(entities[0])
+    #     :arg entity_dofs: FInAT element entity DoFs
+    #     :arg ndofs: number of DoFs in the FInAT element
+    #     """
+    #     entity_offset = [0] * (1 + self._base_mesh.cell_dimension())
+    #     for (b, v), entities in entity_dofs.items():
+    #         entity_offset[b] += len(entities[0])
 
-        dof_offset = np.zeros(ndofs, dtype=IntType)
-        if not real_tensorproduct:
-            for (b, v), entities in entity_dofs.items():
-                for dof_indices in entities.values():
-                    for i in dof_indices:
-                        dof_offset[i] = entity_offset[b]
-        return dof_offset
+    #     dof_offset = np.zeros(ndofs, dtype=IntType)
+    #     if not real_tensorproduct:
+    #         for (b, v), entities in entity_dofs.items():
+    #             for dof_indices in entities.values():
+    #                 for i in dof_indices:
+    #                     dof_offset[i] = entity_offset[b]
+    #     return dof_offset
 
     @utils.cached_property
     def layers(self):

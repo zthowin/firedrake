@@ -196,7 +196,7 @@ def get_map_cache(mesh, key):
 
 
 @cached
-def get_dof_offset(mesh, key, entity_dofs, ndof):
+def get_dof_offset(mesh, key, finat_element, entity_dofs, ndof):
     """Get the dof offsets.
 
     :arg mesh: The mesh to use.
@@ -209,7 +209,7 @@ def get_dof_offset(mesh, key, entity_dofs, ndof):
     :returns: A numpy array of dof offsets (extruded) or ``None``.
     """
     _, real_tensorproduct = key
-    return mesh.make_offset(entity_dofs, ndof, real_tensorproduct=real_tensorproduct)
+    return eutils.calc_offset(finat_element.cell, entity_dofs, ndof, real_tensorproduct)
 
 
 @cached
@@ -465,7 +465,10 @@ class FunctionSpaceData(object):
         # conditions.
         # Map caches are specific to a cell_node_list, which is keyed by entity_dof
         self.map_cache = get_map_cache(mesh, (edofs_key, real_tensorproduct, eperm_key))
-        self.offset = get_dof_offset(mesh, (edofs_key, real_tensorproduct), entity_dofs, finat_element.space_dimension())
+        if isinstance(finat_element, finat.TensorProductElement):
+            self.offset = get_dof_offset(mesh, (edofs_key, real_tensorproduct), finat_element, entity_dofs, finat_element.space_dimension())
+        else:
+            self.offset = None
         self.entity_node_lists = get_entity_node_lists(mesh, (edofs_key, real_tensorproduct, eperm_key), entity_dofs, entity_permutations, global_numbering, self.offset)
         self.node_set = node_set
         self.cell_boundary_masks = get_boundary_masks(mesh, (edofs_key, "cell"), finat_element)
