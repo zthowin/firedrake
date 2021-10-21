@@ -402,7 +402,7 @@ def entity_permutations_key(entity_permutations):
     return key
 
 
-def preprocess_ufl_element(ufl_element):
+def preprocess_finat_element(finat_element):
     """Preprocess a UFL element for descretised representation
 
     :arg mesh: The MeshTopology object
@@ -412,7 +412,6 @@ def preprocess_ufl_element(ufl_element):
     """
     if type(ufl_element) is ufl.MixedElement:
         raise ValueError("Can't create FunctionSpace for MixedElement")
-    finat_element = create_element(ufl_element)
     # Support foo x Real tensorproduct elements
     real_tensorproduct = False
     scalar_element = ufl_element
@@ -439,7 +438,8 @@ class FunctionSpaceData(object):
 
     @PETSc.Log.EventDecorator()
     def __init__(self, mesh, ufl_element):
-        finat_element, entity_dofs, real_tensorproduct = preprocess_ufl_element(ufl_element)
+        finat_element = create_element(ufl_element)
+        entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
         nodes_per_entity = tuple(mesh.make_dofs_per_plex_entity(entity_dofs))
         try:
             entity_permutations = finat_element.entity_permutations
