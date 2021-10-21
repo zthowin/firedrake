@@ -624,16 +624,13 @@ class LocalLoopyKernelBuilder(object):
             if type(element) == MixedElement:
                 mixed = OrderedDict()
                 for j, c_ in enumerate(c.split()):
-                    finat_element = create_element(c_.ufl_element())
-                    name = "w_{}_{}".format(i, j)
+                    name = f"w_{i}_{j}"
                     raise NotImplementedError
                     # info = (name, basis_shape, node_shape)
                     # mixed.update({c_: info})
                 coeff_dict[c] = mixed
             else:
-                finat_element = create_element(c.ufl_element())
-                name = "w_{}".format(i)
-                coeff_dict[c] = (name, finat_element)
+                coeff_dict[c] = f"w_{i}"
         return coeff_dict
 
     def initialise_terminals(self, var2terminal, coefficients):
@@ -704,9 +701,11 @@ class LocalLoopyKernelBuilder(object):
     def generate_wrapper_kernel_args(self, tensor2temp):
         coords = self.expression.ufl_domain().coordinates
         import tsfc
+        from tsfc.kernel_interface.firedrake_loopy import _get_function_space_id
 
         coords_el = tsfc.finatinterface.create_element(coords.ufl_element())
-        args = [kernel_args.CoordinatesKernelArg(coords_el,
+        fs_id = _get_function_space_id(coords.ufl_function_space())
+        args = [kernel_args.CoordinatesKernelArg(coords_el, fs_id,
                                                  dtype=self.tsfc_parameters["scalar_type"])]
 
         if self.bag.needs_cell_orientations:
@@ -721,18 +720,22 @@ class LocalLoopyKernelBuilder(object):
             args.append(kernel_args.CellSizesKernelArg(
                         shape=siz_extent, dtype=self.tsfc_parameters["scalar_type"]))
 
-        for coeff in self.bag.coefficients.values():
-            if isinstance(coeff, OrderedDict):
-                for (name, finat_element) in coeff.values():
+        for coeff, val in self.bag.coefficients.items():
+            if isinstance(val, OrderedDict):
+                for sub_coeff, name in val.values():
+                    finat_element = create_element(sub_coeff.ufl_element())
+                    fs_id = _get_function_space_id(sub_coeff.ufl_function_space())
                     arg = kernel_args.CoefficientKernelArg(
-                        name, finat_element,
+                        name, finat_element, fs_id,
                         dtype=self.tsfc_parameters["scalar_type"]
                     )
                     args.append(arg)
             else:
-                (name, basis_shape, node_shape) = coeff
+                name = val
+                finat_element = create_element(coeff.ufl_element())
+                fs_id = _get_function_space_id(coeff.ufl_function_space())
                 arg = kernel_args.CoefficientKernelArg(
-                    name, finat_element,
+                    name, finat_element, fs_id,
                     dtype=self.tsfc_parameters["scalar_type"]
                 )
                 args.append(arg)

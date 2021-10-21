@@ -402,7 +402,7 @@ def entity_permutations_key(entity_permutations):
     return key
 
 
-def preprocess_ufl_element(mesh, ufl_element):
+def preprocess_ufl_element(ufl_element):
     """Preprocess a UFL element for descretised representation
 
     :arg mesh: The MeshTopology object
@@ -422,8 +422,7 @@ def preprocess_ufl_element(mesh, ufl_element):
         a, b = scalar_element.sub_elements()
         real_tensorproduct = b.family() == 'Real'
     entity_dofs = finat_element.entity_dofs()
-    nodes_per_entity = tuple(mesh.make_dofs_per_plex_entity(entity_dofs))
-    return (finat_element, entity_dofs, nodes_per_entity, real_tensorproduct)
+    return (finat_element, entity_dofs, real_tensorproduct)
 
 
 class FunctionSpaceData(object):
@@ -440,7 +439,8 @@ class FunctionSpaceData(object):
 
     @PETSc.Log.EventDecorator()
     def __init__(self, mesh, ufl_element):
-        finat_element, entity_dofs, nodes_per_entity, real_tensorproduct = preprocess_ufl_element(mesh, ufl_element)
+        finat_element, entity_dofs, real_tensorproduct = preprocess_ufl_element(ufl_element)
+        nodes_per_entity = tuple(mesh.make_dofs_per_plex_entity(entity_dofs))
         try:
             entity_permutations = finat_element.entity_permutations
         except NotImplementedError:
