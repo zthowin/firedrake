@@ -420,9 +420,9 @@ def preprocess_finat_element(finat_element):
     if isinstance(finat_element, finat.TensorFiniteElement):
         scalar_element = finat_element.base_element
     if isinstance(scalar_element, finat.TensorProductElement):
-        raise NotImplementedError
-        a, b = scalar_element.sub_elements()
-        real_tensorproduct = b.family() == 'Real'
+        a, b = scalar_element.factors
+        # TODO I don't know a way to check this using a FInAT element
+        # real_tensorproduct = b.family() == 'Real'
     entity_dofs = finat_element.entity_dofs()
     return entity_dofs, real_tensorproduct
 

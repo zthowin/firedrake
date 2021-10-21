@@ -624,8 +624,8 @@ class LocalLoopyKernelBuilder(object):
             if type(element) == MixedElement:
                 mixed = OrderedDict()
                 for j, c_ in enumerate(c.split()):
-                    name = f"w_{i}_{j}"
                     raise NotImplementedError
+                    # name = f"w_{i}_{j}"
                     # info = (name, basis_shape, node_shape)
                     # mixed.update({c_: info})
                 coeff_dict[c] = mixed
