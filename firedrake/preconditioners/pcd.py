@@ -43,7 +43,7 @@ class PCDPC(PCBase):
     def initialize(self, pc):
         from firedrake import TrialFunction, TestFunction, dx, \
             assemble, inner, grad, split, Constant, parameters
-        from firedrake.assemble import allocate_matrix
+        from firedrake.assemble import allocate_matrix, AssemblyType
         if pc.getType() != "python":
             raise ValueError("Expecting PC type python")
         prefix = pc.getOptionsPrefix() + "pcd_"
@@ -120,7 +120,7 @@ class PCDPC(PCBase):
                                               tensor=self.Fp,
                                               form_compiler_parameters=context.fc_params,
                                               mat_type=self.Fp_mat_type,
-                                              assembly_type="residual")
+                                              assembly_type=AssemblyType.RESIDUAL)
         self._assemble_Fp()
         Fpmat = self.Fp.petscmat
         self.workspace = [Fpmat.createVecLeft() for i in (0, 1)]

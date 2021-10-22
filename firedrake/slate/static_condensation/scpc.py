@@ -29,7 +29,7 @@ class SCPC(SCBase):
         """
 
         from firedrake import assemble
-        from firedrake.assemble import allocate_matrix
+        from firedrake.assemble import AssemblyType, allocate_matrix
         from firedrake.bcs import DirichletBC
         from firedrake.function import Function
         from firedrake.functionspace import FunctionSpace
@@ -91,7 +91,7 @@ class SCPC(SCBase):
                                                 r_expr,
                                                 tensor=self.condensed_rhs,
                                                 form_compiler_parameters=self.cxt.fc_params,
-                                                assembly_type="residual")
+                                                assembly_type=AssemblyType.RESIDUAL)
 
         # Allocate and set the condensed operator
         self.S = allocate_matrix(S_expr,
@@ -107,7 +107,7 @@ class SCPC(SCBase):
                                              bcs=bcs,
                                              form_compiler_parameters=self.cxt.fc_params,
                                              mat_type=mat_type,
-                                             assembly_type="residual")
+                                             assembly_type=AssemblyType.RESIDUAL)
 
         self._assemble_S()
         Smat = self.S.petscmat
@@ -137,7 +137,7 @@ class SCPC(SCBase):
                                                     bcs=bcs,
                                                     form_compiler_parameters=self.cxt.fc_params,
                                                     mat_type=mat_type,
-                                                    assembly_type="residual")
+                                                    assembly_type=AssemblyType.RESIDUAL)
 
             self._assemble_S_pc()
             Smat_pc = self.S_pc.petscmat
@@ -226,7 +226,7 @@ class SCPC(SCBase):
                                            local_solve,
                                            tensor=fields[i],
                                            form_compiler_parameters=self.cxt.fc_params,
-                                           assembly_type="residual")
+                                           assembly_type=AssemblyType.RESIDUAL)
             local_solvers.append(solve_call)
 
         return local_solvers

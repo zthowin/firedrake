@@ -40,7 +40,7 @@ class HybridizationPC(SCBase):
         from firedrake import (FunctionSpace, Function, Constant,
                                TrialFunction, TrialFunctions, TestFunction,
                                DirichletBC, assemble)
-        from firedrake.assemble import allocate_matrix
+        from firedrake.assemble import allocate_matrix, AssemblyType
         from firedrake.formmanipulation import split_form
         from ufl.algorithms.replace import replace
 
@@ -224,7 +224,7 @@ class HybridizationPC(SCBase):
                                                 schur_rhs,
                                                 tensor=self.schur_rhs,
                                                 form_compiler_parameters=self.ctx.fc_params,
-                                                assembly_type="residual")
+                                                assembly_type=AssemblyType.RESIDUAL)
 
         mat_type = PETSc.Options().getString(prefix + "mat_type", "aij")
         self.S = allocate_matrix(schur_comp, bcs=trace_bcs,
@@ -238,7 +238,7 @@ class HybridizationPC(SCBase):
                                              bcs=trace_bcs,
                                              form_compiler_parameters=self.ctx.fc_params,
                                              mat_type=mat_type,
-                                             assembly_type="residual")
+                                             assembly_type=AssemblyType.RESIDUAL)
 
         with PETSc.Log.Event("HybridOperatorAssembly"):
             self._assemble_S()
@@ -296,7 +296,7 @@ class HybridizationPC(SCBase):
         :arg split_trace_op: a ``dict`` of split forms that make up the trace
                              contribution in the hybridized mixed system.
         """
-        from firedrake import assemble
+        from firedrake import AssemblyType, assemble
 
         # We always eliminate the velocity block first
         id0, id1 = (self.vidx, self.pidx)
@@ -324,7 +324,7 @@ class HybridizationPC(SCBase):
                                               u_rec,
                                               tensor=u,
                                               form_compiler_parameters=self.ctx.fc_params,
-                                              assembly_type="residual")
+                                              assembly_type=AssemblyType.RESIDUAL)
 
         sigma_rec = A.solve(g - B * AssembledVector(u) - K_0.T * lambdar,
                             decomposition="PartialPivLU")
@@ -332,7 +332,7 @@ class HybridizationPC(SCBase):
                                                sigma_rec,
                                                tensor=sigma,
                                                form_compiler_parameters=self.ctx.fc_params,
-                                               assembly_type="residual")
+                                               assembly_type=AssemblyType.RESIDUAL)
 
     def build_schur(self, Atilde, K, list_split_mixed_ops, list_split_trace_ops, nested=False):
         """The Schur complement in the operators of the trace solve contains

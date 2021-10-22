@@ -87,7 +87,7 @@ class ImplicitMatrixContext(object):
     @PETSc.Log.EventDecorator()
     def __init__(self, a, row_bcs=[], col_bcs=[],
                  fc_params=None, appctx=None):
-        from firedrake.assemble import assemble
+        from firedrake.assemble import AssemblyType, assemble
 
         self.a = a
         self.aT = adjoint(a)
@@ -144,7 +144,7 @@ class ImplicitMatrixContext(object):
                                                   tensor=self._y,
                                                   bcs=self.bcs_action,
                                                   form_compiler_parameters=self.fc_params,
-                                                  assembly_type="residual")
+                                                  assembly_type=AssemblyType.RESIDUAL)
 
         # For assembling action(adjoint(f), self._y)
         # Sorted list of equation bcs
@@ -163,7 +163,7 @@ class ImplicitMatrixContext(object):
                                       tensor=self._xbc,
                                       bcs=None,
                                       form_compiler_parameters=self.fc_params,
-                                      assembly_type="residual"))
+                                      assembly_type=AssemblyType.RESIDUAL))
         # Domain last
         self._assemble_actionT.append(
             functools.partial(assemble,
@@ -171,7 +171,7 @@ class ImplicitMatrixContext(object):
                               tensor=self._x if len(self.bcs) == 0 else self._xbc,
                               bcs=None,
                               form_compiler_parameters=self.fc_params,
-                              assembly_type="residual"))
+                              assembly_type=AssemblyType.RESIDUAL))
 
     @cached_property
     def _diagonal(self):
@@ -181,13 +181,13 @@ class ImplicitMatrixContext(object):
 
     @cached_property
     def _assemble_diagonal(self):
-        from firedrake.assemble import assemble
+        from firedrake.assemble import AssemblyType, assemble
         return functools.partial(assemble,
                                  self.a,
                                  tensor=self._diagonal,
                                  form_compiler_parameters=self.fc_params,
                                  diagonal=True,
-                                 assembly_type="residual")
+                                 assembly_type=AssemblyType.RESIDUAL)
 
     def getDiagonal(self, mat, vec):
         self._assemble_diagonal()

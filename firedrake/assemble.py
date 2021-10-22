@@ -400,18 +400,18 @@ class _TwoFormAssembler(_FormAssembler):
         self._tensor = tensor
         self._bcs = bcs
         self._is_matfree = mat_type == "matfree"
-        self._appctx = appctx or {}
-        self._options_prefix = options_prefix
 
     @property
     def result(self):
         if not self._is_matfree:
             self._tensor.M.assemble()
+        else:
+            self._tensor.assemble()
         return self._tensor
 
     def assemble(self, expr=None, bcs=None):
         if self._is_matfree:
-            self._tensor.assemble()
+            return
 
         if expr is None:
             assert bcs is None
@@ -701,6 +701,8 @@ class _AssembleWrapperKernelBuilder:
             self._expr, diagonal=self._diagonal, **self._local_kernel_kwargs
         )
 
+        assert len(local_kernels) == len(self._kernel_data)
+
         wrapper_kernels = []
         for local_kernel, kernel_data in zip(local_kernels, self._kernel_data):
             kinfo = local_kernel.tsfc_kernel.kinfo
@@ -937,6 +939,8 @@ class ParloopExecutor:
         #     o = c(op2.READ)
         #     extra_args.append(o)
 
+        assert len(wrapper_kernels) == len(self._parloop_data)
+
         integrals = itertools.chain(*[subexpr.integrals() for _, subexpr in _split_expr(self._expr, diagonal=self._diagonal)])
         for integral, wrapper_kernel, parloop_data in zip(integrals, wrapper_kernels, self._parloop_data):
             # Icky generator so we can access the correct coefficients in order
@@ -1110,8 +1114,18 @@ def _tuplify(params):
 
 
 def _split_expr(expr, diagonal=False):
+    # This is a mess. Basically it is not always obvious how many kernels TSFC will return
+    # and what indices the results will have. This check duplicates what happens in
+    # tsfc_interface.py and tsfc.driver.py
+    # from tsfc.ufl_utils import compute_form_data
     if isinstance(expr, ufl.Form):
         return split_form(expr, diagonal)
+        # res = []
+        # iterable = split_form(expr, diagonal)
+        # for idx, f in iterable:
+        #     for _ in compute_form_data(f).integral_data:
+        #         res.append((idx, None))
+        # return tuple(res)
     elif isinstance(expr, slate.TensorBase):
         # TODO make split kernel
         # TODO this is replicated in slac/compiler.py

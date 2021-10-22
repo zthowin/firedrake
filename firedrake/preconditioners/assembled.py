@@ -21,7 +21,7 @@ class AssembledPC(PCBase):
     _prefix = "assembled_"
 
     def initialize(self, pc):
-        from firedrake.assemble import allocate_matrix, assemble
+        from firedrake.assemble import AssemblyType, allocate_matrix, assemble
         _, P = pc.getOperators()
 
         if pc.getType() != "python":
@@ -62,7 +62,7 @@ class AssembledPC(PCBase):
                                              bcs=bcs,
                                              form_compiler_parameters=fcp,
                                              mat_type=mat_type,
-                                             assembly_type="residual")
+                                             assembly_type=AssemblyType.RESIDUAL)
         self._assemble_P()
 
         # Transfer nullspace over
