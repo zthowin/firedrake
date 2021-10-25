@@ -592,7 +592,11 @@ class _AssembleLocalKernelBuilder(pyop2_interface.LocalKernelBuilder):
 
         local_kernels = []
         for tsfc_kernel in self.compile_expr():
-            local_kernels.append(pyop2_interface.LocalKernel(tsfc_kernel))
+            # Handle empty kernel case
+            if tsfc_kernel is None:
+                local_kernels.append(None)
+            else:
+                local_kernels.append(pyop2_interface.LocalKernel(tsfc_kernel))
         return tuple(local_kernels)
 
     @abc.abstractmethod
@@ -706,6 +710,11 @@ class _AssembleWrapperKernelBuilder:
         wrapper_kernels = []
         for local_kernel, kernel_data in zip(local_kernels, self._kernel_data):
             kinfo = local_kernel.tsfc_kernel.kinfo
+
+            # Handle empty kernels
+            if kinfo is None:
+                wrapper_kernels.append(None)
+                continue
 
             wrapper_kernel_args = [
                 self._as_wrapper_kernel_arg(arg, kernel_data, kinfo.integral_type)
@@ -943,9 +952,13 @@ class ParloopExecutor:
 
         integrals = itertools.chain(*[subexpr.integrals() for _, subexpr in _split_expr(self._expr, diagonal=self._diagonal)])
         for integral, wrapper_kernel, parloop_data in zip(integrals, wrapper_kernels, self._parloop_data):
-            # Icky generator so we can access the correct coefficients in order
+            # Handle empty kernel case
+            if wrapper_kernel is None:
+                continue
+
             kinfo = wrapper_kernel.tsfc_kernel.kinfo
 
+            # Icky generator so we can access the correct coefficients in order
             def coeffs():
                 for n, split_map in kinfo.coefficient_map:
                     c = self._expr.coefficients()[n]

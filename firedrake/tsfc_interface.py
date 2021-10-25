@@ -130,6 +130,11 @@ class TSFCKernel(Cached):
         tree = tsfc_compile_form(form, prefix=name, parameters=parameters, interface=interface, coffee=coffee, diagonal=diagonal)
         kernels = []
         for kernel in tree:
+            # Handle empty kernels
+            if kernel is None:
+                kernels.append(None)
+                continue
+
             # Set optimization options
             opts = default_parameters["coffee"]
             # Unwind coefficient numbering
