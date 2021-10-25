@@ -116,6 +116,10 @@ def matrix_funptr(form, state):
     for kernel in kernels:
         kinfo = kernel.kinfo
 
+        # Handle empty kernels
+        if kinfo is None:
+            continue
+
         if kinfo.subdomain_id != "otherwise":
             raise NotImplementedError("Only for full domain integrals")
         if kinfo.integral_type not in {"cell", "interior_facet"}:
@@ -145,7 +149,6 @@ def matrix_funptr(form, state):
         mat = LocalMat(dofset)
 
         arg = mat(op2.INC, (entity_node_map, entity_node_map))
-        arg.position = 0
         args.append(arg)
         statedat = LocalDat(dofset)
         state_entity_node_map = op2.Map(iterset,
@@ -155,39 +158,35 @@ def matrix_funptr(form, state):
 
         mesh = form.ufl_domains()[kinfo.domain_number]
         arg = mesh.coordinates.dat(op2.READ, get_map(mesh.coordinates))
-        arg.position = 1
         args.append(arg)
         if kinfo.oriented:
             c = form.ufl_domain().cell_orientations()
             arg = c.dat(op2.READ, get_map(c))
-            arg.position = len(args)
             args.append(arg)
         if kinfo.needs_cell_sizes:
             c = form.ufl_domain().cell_sizes
             arg = c.dat(op2.READ, get_map(c))
-            arg.position = len(args)
             args.append(arg)
         for n, _ in kinfo.coefficient_map:
             c = form.coefficients()[n]
             if c is state:
-                statearg.position = len(args)
                 args.append(statearg)
                 continue
             for (i, c_) in enumerate(c.split()):
                 map_ = get_map(c_)
                 arg = c_.dat(op2.READ, map_)
-                arg.position = len(args)
                 args.append(arg)
 
         if kinfo.integral_type == "interior_facet":
             arg = test.ufl_domain().interior_facets.local_facet_dat(op2.READ)
-            arg.position = len(args)
             args.append(arg)
         iterset = op2.Subset(iterset, [])
         mod = pyop2.parloop.JITModule(kinfo.kernel, iterset, *args)
         kernels.append(CompiledKernel(mod._fun, kinfo))
     return cell_kernels, int_facet_kernels
 
+from petsc4py import PETSc
+PETSc.Sys.popErrorHandler()
 
 def residual_funptr(form, state):
     from firedrake.tsfc_interface import compile_form
@@ -207,6 +206,10 @@ def residual_funptr(form, state):
     int_facet_kernels = []
     for kernel in kernels:
         kinfo = kernel.kinfo
+
+        # Handle empty kernels
+        if kinfo is None:
+            continue
 
         if kinfo.subdomain_id != "otherwise":
             raise NotImplementedError("Only for full domain integrals")
@@ -241,39 +244,32 @@ def residual_funptr(form, state):
         statearg = statedat(op2.READ, state_entity_node_map)
 
         arg = dat(op2.INC, entity_node_map)
-        arg.position = 0
         args.append(arg)
 
         mesh = form.ufl_domains()[kinfo.domain_number]
         arg = mesh.coordinates.dat(op2.READ, get_map(mesh.coordinates))
-        arg.position = 1
         args.append(arg)
 
         if kinfo.oriented:
             c = form.ufl_domain().cell_orientations()
             arg = c.dat(op2.READ, get_map(c))
-            arg.position = len(args)
             args.append(arg)
         if kinfo.needs_cell_sizes:
             c = form.ufl_domain().cell_sizes
             arg = c.dat(op2.READ, get_map(c))
-            arg.position = len(args)
             args.append(arg)
         for n, _ in kinfo.coefficient_map:
             c = form.coefficients()[n]
             if c is state:
-                statearg.position = len(args)
                 args.append(statearg)
                 continue
             for (i, c_) in enumerate(c.split()):
                 map_ = get_map(c_)
                 arg = c_.dat(op2.READ, map_)
-                arg.position = len(args)
                 args.append(arg)
 
         if kinfo.integral_type == "interior_facet":
             arg = test.ufl_domain().interior_facets.local_facet_dat(op2.READ)
-            arg.position = len(args)
             args.append(arg)
         iterset = op2.Subset(iterset, [])
         mod = pyop2.parloop.JITModule(kinfo.kernel, iterset, *args)
