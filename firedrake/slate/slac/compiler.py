@@ -171,26 +171,26 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
 
     scalar_type = compiler_parameters["form_compiler"]["scalar_type"]
 
+    ###
+
     # TODO Clean up A LOT
     from tsfc.finatinterface import create_element
-    from tsfc.kernel_interface.firedrake_loopy import _get_function_space_id
     arguments = slate_expr.arguments()
     if len(arguments) == 0:
         raise NotImplementedError
     elif len(arguments) == 1:
         argument, = arguments
         el = create_element(argument.ufl_element())
-        fs_id = _get_function_space_id(argument.ufl_function_space())
-        output_arg = kernel_args.VectorOutputKernelArg(el, fs_id, dtype=scalar_type)
+        output_arg = kernel_args.VectorOutputKernelArg(el, dtype=scalar_type)
     elif len(arguments) == 2:
         rargument, cargument = arguments
         rel = create_element(rargument.ufl_element())
         cel = create_element(cargument.ufl_element())
-        rfs_id = _get_function_space_id(rargument.ufl_function_space())
-        cfs_id = _get_function_space_id(cargument.ufl_function_space())
-        output_arg = kernel_args.MatrixOutputKernelArg(rel, cel, rfs_id, cfs_id, dtype=scalar_type)
+        output_arg = kernel_args.MatrixOutputKernelArg(rel, cel, dtype=scalar_type)
     else:
         raise AssertionError
+
+    ###
 
     # Create a loopy builder for the Slate expression,
     # e.g. contains the loopy kernels coming from TSFC

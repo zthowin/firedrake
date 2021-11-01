@@ -518,11 +518,13 @@ class LocalLoopyKernelBuilder(object):
                         kernel_args.CoordinatesKernelArg.name)]
 
         if kinfo.oriented:
+            raise NotImplementedError
             self.bag.needs_cell_orientations = True
             kernel_data.append((mesh.cell_orientations(),
                                 kernel_args.CellOrientationsKernelArg.name))
 
         if kinfo.needs_cell_sizes:
+            raise NotImplementedError
             self.bag.needs_cell_sizes = True
             kernel_data.append((mesh.cell_sizes,
                                 kernel_args.CellSizesKernelArg.name))
@@ -531,11 +533,11 @@ class LocalLoopyKernelBuilder(object):
         tsfc_coefficients = [tsfc_coefficients[i] for i, _ in kinfo.coefficient_map]
         for c, cinfo in wrapper_coefficients.items():
             if c in tsfc_coefficients:
-                if isinstance(cinfo, tuple):
-                    kernel_data.extend([(c, cinfo[0])])
+                if isinstance(cinfo, str):
+                    kernel_data.extend([(c, cinfo)])
                 else:
                     for c_, info in cinfo.items():
-                        kernel_data.extend([(c_, info[0])])
+                        kernel_data.extend([(c_, info)])
         return kernel_data
 
     def loopify_tsfc_kernel_data(self, kernel_data):
@@ -619,18 +621,15 @@ class LocalLoopyKernelBuilder(object):
         """
         coeffs = self.expression.coefficients()
         coeff_dict = OrderedDict()
-        for i, c in enumerate(coeffs):
-            element = c.ufl_element()
+        for i, coeff in enumerate(coeffs):
+            element = coeff.ufl_element()
             if type(element) == MixedElement:
-                mixed = OrderedDict()
-                for j, c_ in enumerate(c.split()):
-                    raise NotImplementedError
-                    # name = f"w_{i}_{j}"
-                    # info = (name, basis_shape, node_shape)
-                    # mixed.update({c_: info})
-                coeff_dict[c] = mixed
+                subcoeff_dict = OrderedDict()
+                for j, subcoeff in enumerate(coeff.split()):
+                    subcoeff_dict[subcoeff] = f"w_{i}_{j}"
+                coeff_dict[coeff] = subcoeff_dict
             else:
-                coeff_dict[c] = f"w_{i}"
+                coeff_dict[coeff] = f"w_{i}"
         return coeff_dict
 
     def initialise_terminals(self, var2terminal, coefficients):
@@ -639,7 +638,6 @@ class LocalLoopyKernelBuilder(object):
 
             :arg var2terminal: dictionary that maps Slate Tensors to gem Variables
         """
-
         tensor2temp = OrderedDict()
         inits = []
         for gem_tensor, slate_tensor in var2terminal.items():
@@ -660,19 +658,21 @@ class LocalLoopyKernelBuilder(object):
 
             else:
                 f = slate_tensor.form if isinstance(slate_tensor.form, tuple) else (slate_tensor.form,)
-                coeff = tuple(coefficients[c] for c in f)
-                offset = 0
-                ismixed = tuple((type(c.ufl_element()) == MixedElement) for c in f)
-                names = []
-                for (im, c) in zip(ismixed, coeff):
-                    names += [name for (name, ext) in c.values()] if im else [c[0]]
 
+                names = []
+                for coeff in f:
+                    if isinstance(coeff, MixedElement):
+                        names += [name for name in coefficients[coeff].values()]
+                    else:
+                        names.append(coefficients[coeff])
+
+                offset = 0
                 # Mixed coefficients come as seperate parameter (one per space)
                 for i, shp in enumerate(*slate_tensor.shapes.values()):
                     indices = self.bag.index_creator((shp,))
                     inames = {var.name for var in indices}
                     offset_index = (pym.Sum((offset, indices[0])),)
-                    name = names[i] if ismixed else names
+                    name = names[i]
                     var = pym.Subscript(pym.Variable(loopy_tensor.name), offset_index)
                     c = pym.Subscript(pym.Variable(name), indices)
                     inits.append(loopy.Assignment(var, c, id="init%d" % len(inits),
@@ -701,12 +701,9 @@ class LocalLoopyKernelBuilder(object):
     def generate_wrapper_kernel_args(self, tensor2temp):
         coords = self.expression.ufl_domain().coordinates
         import tsfc
-        from tsfc.kernel_interface.firedrake_loopy import _get_function_space_id
 
         coords_el = tsfc.finatinterface.create_element(coords.ufl_element())
-        fs_id = _get_function_space_id(coords.ufl_function_space())
-        args = [kernel_args.CoordinatesKernelArg(coords_el, fs_id,
-                                                 dtype=self.tsfc_parameters["scalar_type"])]
+        args = [kernel_args.CoordinatesKernelArg(coords_el, dtype=self.tsfc_parameters["scalar_type"])]
 
         if self.bag.needs_cell_orientations:
             raise NotImplementedError
@@ -722,25 +719,24 @@ class LocalLoopyKernelBuilder(object):
 
         for coeff, val in self.bag.coefficients.items():
             if isinstance(val, OrderedDict):
+                raise NotImplementedError
                 for sub_coeff, name in val.values():
                     finat_element = create_element(sub_coeff.ufl_element())
-                    fs_id = _get_function_space_id(sub_coeff.ufl_function_space())
                     arg = kernel_args.CoefficientKernelArg(
-                        name, finat_element, fs_id,
-                        dtype=self.tsfc_parameters["scalar_type"]
+                        name, finat_element, dtype=self.tsfc_parameters["scalar_type"]
                     )
                     args.append(arg)
             else:
                 name = val
                 finat_element = create_element(coeff.ufl_element())
-                fs_id = _get_function_space_id(coeff.ufl_function_space())
                 arg = kernel_args.CoefficientKernelArg(
-                    name, finat_element, fs_id,
+                    name, finat_element,
                     dtype=self.tsfc_parameters["scalar_type"]
                 )
                 args.append(arg)
 
         if self.bag.needs_cell_facets:
+            raise NotImplementedError
             # Arg for is exterior (==0)/interior (==1) facet or not
             args.append(CellFacetKernelArg((self.num_facets, 2)))
 
@@ -754,6 +750,7 @@ class LocalLoopyKernelBuilder(object):
 
         # TODO There are two args added here but only one in assemble?
         if self.bag.needs_mesh_layers:
+            raise NotImplementedError
             args.append(LayerCountKernelArg())
             args.append(LayerKernelArg())
 
