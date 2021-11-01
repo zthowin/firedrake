@@ -210,7 +210,7 @@ class SCPC(SCBase):
         :arg elim_fields: An iterable of eliminated field indices
                           to recover.
         """
-        from firedrake import assemble
+        from firedrake import AssemblyType, assemble
         from firedrake.slate.static_condensation.la_utils import backward_solve
 
         fields = x.split()

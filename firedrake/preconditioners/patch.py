@@ -56,12 +56,30 @@ class LocalMatPack(LocalPack, MatPack):
                        True: "MatSetValues"}
 
 
-class LocalMat(pyop2.types.AbstractMat):
+class LocalMatWrapperKernelArg(op2.MatWrapperKernelArg):
+
     pack = LocalMatPack
+
+
+class LocalMatPayload(pyop2.legacy.MatPayload):
+
+    @property
+    def wrapper_kernel_arg(self):
+        map_args = []
+        for m in self.maps:
+            offset = tuple(m.offset) if m.offset is not None else None
+            map_args.append(op2.MapWrapperKernelArg(m.name, m.arity, offset))
+        return LocalMatWrapperKernelArg(self.mat.dims, map_args, unroll=self.unroll)
+
+
+class LocalMat(pyop2.types.AbstractMat):
 
     def __init__(self, dset):
         self._sparsity = DenseSparsity(dset, dset)
         self.dtype = numpy.dtype(PETSc.ScalarType)
+
+    def __call__(self, *args, **kwargs):
+        return LocalMatPayload(self, *args, **kwargs)
 
 
 class LocalDatPack(LocalPack, DatPack):
@@ -76,6 +94,31 @@ class LocalDatPack(LocalPack, DatPack):
             return None
 
 
+class LocalDatWrapperKernelArg(op2.DatWrapperKernelArg):
+
+    def __init__(self, *args, needs_mask, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.needs_mask = needs_mask
+
+    @property
+    def pack(self):
+        return partial(LocalDatPack, self.needs_mask)
+
+
+class LocalDatPayload(pyop2.legacy.DatPayload):
+
+    @property
+    def wrapper_kernel_arg(self):
+        if self.map_:
+            # offset cannot be a numpy array as it needs to be hashable
+            offset = tuple(self.map_.offset) if self.map_.offset is not None else None
+            # Note: we use the map's name as the ID of the map arg. Is this valid?
+            map_arg = op2.MapWrapperKernelArg(self.map_.name, self.map_.arity, offset)
+            return LocalDatWrapperKernelArg(self.dat.dataset.dim, map_arg, needs_mask=self.dat.needs_mask)
+        else:
+            return LocalDatWrapperKernelArg(self.dat.dataset.dim, needs_mask=self.dat.needs_mask)
+
+
 class LocalDat(pyop2.types.AbstractDat):
     def __init__(self, dset, needs_mask=False):
         self._dataset = dset
@@ -87,9 +130,8 @@ class LocalDat(pyop2.types.AbstractDat):
     def _wrapper_cache_key_(self):
         return super()._wrapper_cache_key_ + (self.needs_mask, )
 
-    @property
-    def pack(self):
-        return partial(LocalDatPack, self.needs_mask)
+    def __call__(self, access, map_=None):
+        return LocalDatPayload(self, access, map_)
 
 
 register_petsc_function("MatSetValues")
@@ -181,12 +223,14 @@ def matrix_funptr(form, state):
             arg = test.ufl_domain().interior_facets.local_facet_dat(op2.READ)
             args.append(arg)
         iterset = op2.Subset(iterset, [])
-        mod = pyop2.parloop.JITModule(kinfo.kernel, iterset, *args)
-        kernels.append(CompiledKernel(mod._fun, kinfo))
+
+        wrapper_knl_args = []
+        for a in args:
+            wrapper_knl_args.append(a.wrapper_kernel_arg)
+        mod = op2.WrapperKernel(kinfo.kernel, wrapper_knl_args, subset=True)
+        kernels.append(CompiledKernel(mod.compile(iterset.comm), kinfo))
     return cell_kernels, int_facet_kernels
 
-from petsc4py import PETSc
-PETSc.Sys.popErrorHandler()
 
 def residual_funptr(form, state):
     from firedrake.tsfc_interface import compile_form
@@ -272,7 +316,9 @@ def residual_funptr(form, state):
             arg = test.ufl_domain().interior_facets.local_facet_dat(op2.READ)
             args.append(arg)
         iterset = op2.Subset(iterset, [])
-        mod = pyop2.parloop.JITModule(kinfo.kernel, iterset, *args)
+
+        wrapper_knl_args = [a.wrapper_kernel_arg for a in args]
+        mod = op2.WrapperKernel(kinfo.kernel, wrapper_knl_args, subset=True)
         kernels.append(CompiledKernel(mod._fun, kinfo))
     return cell_kernels, int_facet_kernels
 
