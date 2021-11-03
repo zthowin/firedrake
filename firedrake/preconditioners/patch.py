@@ -67,8 +67,9 @@ class LocalMatPayload(pyop2.legacy.MatPayload):
     def wrapper_kernel_arg(self):
         map_args = []
         for m in self.maps:
+            map_id = m.iterset, m.toset, m.name, m._wrapper_cache_key_
             offset = tuple(m.offset) if m.offset is not None else None
-            map_args.append(op2.MapWrapperKernelArg(m.name, m.arity, offset))
+            map_args.append(op2.MapWrapperKernelArg(map_id, m.arity, offset))
         return LocalMatWrapperKernelArg(self.mat.dims, map_args, unroll=self.unroll)
 
 
@@ -112,8 +113,8 @@ class LocalDatPayload(pyop2.legacy.DatPayload):
         if self.map_:
             # offset cannot be a numpy array as it needs to be hashable
             offset = tuple(self.map_.offset) if self.map_.offset is not None else None
-            # Note: we use the map's name as the ID of the map arg. Is this valid?
-            map_arg = op2.MapWrapperKernelArg(self.map_.name, self.map_.arity, offset)
+            map_id = self.map_.iterset, self.map_.toset, self.map_.name, self.map_._wrapper_cache_key_
+            map_arg = op2.MapWrapperKernelArg(map_id, self.map_.arity, offset)
             return LocalDatWrapperKernelArg(self.dat.dataset.dim, map_arg, needs_mask=self.dat.needs_mask)
         else:
             return LocalDatWrapperKernelArg(self.dat.dataset.dim, needs_mask=self.dat.needs_mask)
@@ -157,10 +158,6 @@ def matrix_funptr(form, state):
     int_facet_kernels = []
     for kernel in kernels:
         kinfo = kernel.kinfo
-
-        # Handle empty kernels
-        if kinfo is None:
-            continue
 
         if kinfo.subdomain_id != "otherwise":
             raise NotImplementedError("Only for full domain integrals")
@@ -250,10 +247,6 @@ def residual_funptr(form, state):
     int_facet_kernels = []
     for kernel in kernels:
         kinfo = kernel.kinfo
-
-        # Handle empty kernels
-        if kinfo is None:
-            continue
 
         if kinfo.subdomain_id != "otherwise":
             raise NotImplementedError("Only for full domain integrals")
