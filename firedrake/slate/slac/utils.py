@@ -6,7 +6,8 @@ from collections import OrderedDict
 from ufl.algorithms.multifunction import MultiFunction
 
 from gem import (Literal, Sum, Product, Indexed, ComponentTensor, IndexSum,
-                 Solve, Inverse, Variable, view, Delta, Index, Division)
+                 Solve, Inverse, Variable, view, Delta, Index, Division,
+                 Action)
 from gem import indices as make_indices
 from gem.node import Memoizer
 from gem.node import pre_traversal as traverse_dags
@@ -168,6 +169,7 @@ def _slate2gem(expr, self):
 @_slate2gem.register(sl.Tensor)
 @_slate2gem.register(sl.AssembledVector)
 @_slate2gem.register(sl.BlockAssembledVector)
+@_slate2gem.register(sl.TensorShell)
 def _slate2gem_tensor(expr, self):
     shape = expr.shape if not len(expr.shape) == 0 else (1, )
     name = f"T{len(self.var2terminal)}"
@@ -219,9 +221,30 @@ def _slate2gem_reciprocal(expr, self):
     return ComponentTensor(Division(Literal(1.), Indexed(child, indices)), indices)
 
 
+@_slate2gem.register(sl.Action)
+def _slate2gem_action(expr, self):
+    assert expr not in self.var2terminal.values()
+    children = list(map(self, expr.children))
+    name = f"A{len(self.var2terminal)}"
+    var = Action(*children, name, expr.pick_op)
+    self.var2terminal[var] = expr
+    return var
+
+
 @_slate2gem.register(sl.Solve)
 def _slate2gem_solve(expr, self):
-    return Solve(*map(self, expr.children))
+    if expr.matfree:
+        name = f"S{len(self.var2terminal)}"
+        assert expr not in self.var2terminal.values()
+        self.var2terminal[name] = expr
+        var = Solve(*map(self, expr.children), name, expr.matfree, self(expr.Aonx), self(expr.Aonp))
+        self.var2terminal[var] = expr
+        # FIXME something is happening to the solve action node hash
+        # so that gem node cannot be found in var2terminal even though it is there
+        # so we save solve node by name for now (there is a corresponding FIXME in the merger)
+        return var
+    else:
+        return Solve(*map(self, expr.children))
 
 
 @_slate2gem.register(sl.Transpose)
