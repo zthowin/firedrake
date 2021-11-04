@@ -22,6 +22,7 @@ from firedrake.functionspacedata import (preprocess_finat_element, entity_dofs_k
                                          entity_permutations_key)
 from firedrake.petsc import PETSc
 from firedrake.slate import slac, slate
+from firedrake.slate.slac.kernel_builder import CellFacetKernelArg, LayerCountKernelArg, LayerKernelArg
 from firedrake.utils import ScalarType
 from pyop2 import op2
 import pyop2.wrapper_kernel
@@ -342,7 +343,7 @@ class _OneFormAssembler(_FormAssembler):
             iterset = _get_iterset(form, knl.tsfc_kernel.kinfo, all_integer_subdomain_ids)
             _execute_parloop(form, knl, iterset, tensor=self._tensor, diagonal=self._diagonal)
 
-        for bc in solving._extract_bcs(bcs):
+        for bc in bcs:
             if isinstance(bc, EquationBC):
                 bc = bc.extract_form("F")
             self._apply_bc(bc)
@@ -423,8 +424,6 @@ class _TwoFormAssembler(_FormAssembler):
             expr = self._expr
             bcs = self._bcs
 
-        bcs = solving._extract_bcs(bcs)
-
         knls = _make_wrapper_kernels(expr, form_compiler_params=self.form_compiler_params)
 
         tsfc_knls = [knl.tsfc_kernel for knl in knls]
@@ -450,9 +449,10 @@ class _TwoFormAssembler(_FormAssembler):
             # If we need to handle boundary conditions then replace the first argument to
             # the wrapper kernel.
             if unroll:
-                old_arg = knl.arguments[0]
+                old_arg = knl.pyop2_kernel.arguments[0]
                 new_arg = dataclasses.replace(old_arg, unroll=True)
-                knl = pyop2.wrapper_kernel.replace_argument(old_arg, new_arg)
+                pyop2_kernel = pyop2.wrapper_kernel.replace_argument(knl.pyop2_kernel, old_arg, new_arg)
+                knl = dataclasses.replace(knl, pyop2_kernel=pyop2_kernel)
 
             _execute_parloop(expr, knl, iterset, tensor=self._tensor, lgmaps=lgmaps)
 
@@ -558,7 +558,7 @@ class _TwoFormAssembler(_FormAssembler):
         return (rlgmap, clgmap), unroll
 
 
-def _assemble_form(form, *args, assembly_type=AssemblyType.SOLUTION, diagonal=False, **kwargs):
+def _assemble_form(form, tensor=None, bcs=None, *, assembly_type=AssemblyType.SOLUTION, diagonal=False, **kwargs):
     """Assemble a form.
 
     :arg form:
@@ -577,13 +577,16 @@ def _assemble_form(form, *args, assembly_type=AssemblyType.SOLUTION, diagonal=Fa
     for mesh in form.ufl_domains():
         mesh.init()
 
+    bcs = solving._extract_bcs(bcs)
+
     rank = len(form.arguments())
     if rank == 0:
-        assembler = _ZeroFormAssembler(form, *args, **kwargs)
+        assert tensor is None and bcs == ()
+        assembler = _ZeroFormAssembler(form, **kwargs)
     elif rank == 1 or (rank == 2 and diagonal):
-        assembler = _OneFormAssembler(form, *args, assembly_type=assembly_type, diagonal=diagonal, **kwargs)
+        assembler = _OneFormAssembler(form, tensor, bcs, assembly_type=assembly_type, diagonal=diagonal, **kwargs)
     elif rank == 2:
-        assembler = _TwoFormAssembler(form, *args, **kwargs)
+        assembler = _TwoFormAssembler(form, tensor, bcs, **kwargs)
     else:
         raise AssertionError
 
@@ -658,6 +661,7 @@ class _AssembleWrapperKernelBuilder:
             wrapper_kernel_args = [
                 self._as_wrapper_kernel_arg(arg, kinfo.integral_type)
                 for arg in kinfo.tsfc_kernel_args
+                if arg.intent is not None
             ]
 
             iteration_region = {
@@ -720,6 +724,17 @@ def _(tsfc_arg, self, integral_type):
     return op2.DatWrapperKernelArg(tsfc_arg.shape)
 
 
+@_as_wrapper_kernel_arg.register(CellFacetKernelArg)
+def _(tsfc_arg, self, integral_type):
+    return op2.DatWrapperKernelArg(tsfc_arg.shape)
+
+
+# This argument does not get seen in the wrapper kernel (i.e. pass_layer_arg)
+@_as_wrapper_kernel_arg.register(LayerKernelArg)
+def _(*args, **kwargs):
+    pass
+
+
 @_as_wrapper_kernel_arg.register(kernel_args.CellOrientationsKernelArg)
 def _(tsfc_arg, self, integral_type):
     # TODO Here we assume:
@@ -731,12 +746,40 @@ def _(tsfc_arg, self, integral_type):
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankTwoKernelArg)
 def _(tsfc_arg, self, integral_type):
-    rmap_id = _get_map_id(tsfc_arg._relem._elem, integral_type)
-    cmap_id = _get_map_id(tsfc_arg._celem._elem, integral_type)
+    relem = tsfc_arg._relem
+    celem = tsfc_arg._celem
+
+    if relem.is_mixed:
+        if celem.is_mixed:
+            subargs = []
+            shape = len(relem.split()), len(celem.split())
+            for rel, cel in itertools.product(relem.split(), celem.split()):
+                subargs.append(_make_mat_wrapper_kernel_arg(rel, cel, integral_type))
+            return op2.MixedMatWrapperKernelArg(subargs, shape)
+        else:
+            subargs = []
+            shape = len(relem.split()), 1
+            for rel in relem.split():
+                subargs.append(_make_mat_wrapper_kernel_arg(rel, celem, integral_type))
+            return op2.MixedMatWrapperKernelArg(subargs, shape)
+    else:
+        if celem.is_mixed:
+            shape = 1, len(celem.split())
+            subargs = []
+            for cel in celem.split():
+                subargs.append(_make_mat_wrapper_kernel_arg(relem, cel, integral_type))
+            return op2.MixedMatWrapperKernelArg(subargs, shape)
+        else:
+            return _make_mat_wrapper_kernel_arg(relem, celem, integral_type)
+
+
+def _make_mat_wrapper_kernel_arg(relem, celem, integral_type):
+    rmap_id = _get_map_id(relem._elem, integral_type)
+    cmap_id = _get_map_id(celem._elem, integral_type)
 
     ###
 
-    finat_element = tsfc_arg._relem._elem
+    finat_element = relem._elem
     entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
     # offset only valid for extruded
     if isinstance(finat_element, finat.TensorProductElement):
@@ -746,7 +789,7 @@ def _(tsfc_arg, self, integral_type):
 
     ###
 
-    finat_element = tsfc_arg._celem._elem
+    finat_element = celem._elem
     entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
     # offset only valid for extruded
     if isinstance(finat_element, finat.TensorProductElement):
@@ -756,14 +799,15 @@ def _(tsfc_arg, self, integral_type):
 
     ###
 
-    rmap_arg = op2.MapWrapperKernelArg(rmap_id, tsfc_arg.rnode_shape, roffset)
-    cmap_arg = op2.MapWrapperKernelArg(cmap_id, tsfc_arg.cnode_shape, coffset)
+    rmap_arg = op2.MapWrapperKernelArg(rmap_id, relem.node_shape, roffset)
+    cmap_arg = op2.MapWrapperKernelArg(cmap_id, celem.node_shape, coffset)
 
     # PyOP2 matrix objects have scalar dims so we cope with that here...
-    rdim = (numpy.prod(tsfc_arg.rshape, dtype=int),)
-    cdim = (numpy.prod(tsfc_arg.cshape, dtype=int),)
+    rdim = (numpy.prod(relem.tensor_shape, dtype=int),)
+    cdim = (numpy.prod(celem.tensor_shape, dtype=int),)
 
     return op2.MatWrapperKernelArg(((rdim+cdim,),), (rmap_arg, cmap_arg))
+
 
 
 def _get_map_id(finat_element, integral_type):
@@ -848,9 +892,10 @@ class ParloopExecutor:
 
         parloop_args = [
             _as_parloop_arg(tsfc_arg, self, self._knl, lgmaps=self._lgmaps)
-            for tsfc_arg in self._knl.tsfc_args
+            for tsfc_arg in self._knl.tsfc_args if tsfc_arg.intent is not None
         ]
         try:
+            # import pdb; pdb.set_trace()
             op2.parloop(self._knl.pyop2_kernel, self._iterset, parloop_args)
         except MapValueError:
             raise RuntimeError("Integral measure does not match measure of all "
@@ -924,6 +969,12 @@ def _(tsfc_arg, self, wrapper_kernel, **kwargs):
     return op2.DatParloopArg(mesh.interior_facets.local_facet_dat)
 
 
+@_as_parloop_arg.register(CellFacetKernelArg)
+def _(tsfc_arg, self, wrapper_kernel, **kwargs):
+    mesh = self._get_mesh(wrapper_kernel.tsfc_kernel)
+    return op2.DatParloopArg(mesh.cell_to_facets)
+
+
 @_as_parloop_arg.register(kernel_args.ConstantKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, **kwargs):
     coeff = next(self.coeffs_iterator)
@@ -936,6 +987,12 @@ def _(tsfc_arg, self, wrapper_kernel, **kwargs):
 
     coeff = next(self.coeffs_iterator)
     return op2.DatParloopArg(coeff.dat, self._get_map(coeff.function_space(), kinfo.integral_type))
+
+
+@_as_parloop_arg.register(LayerCountKernelArg)
+def _(tsfc_arg, self, wrapper_kernel, **kwargs):
+    glob = op2.Global(tsfc_arg.shape, self._iterset.layers-2, dtype=tsfc_arg.dtype)
+    return op2.GlobalParloopArg(glob)
 
 
 @_as_parloop_arg.register(kernel_args.ScalarOutputKernelArg)

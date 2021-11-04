@@ -1,6 +1,9 @@
 from firedrake import *
 import pytest
 
+from petsc4py import PETSc
+PETSc.Sys.popErrorHandler()
+
 
 @pytest.mark.parametrize(("degree", "hdiv_family"),
                          [(1, "RT"), (1, "BDM")])

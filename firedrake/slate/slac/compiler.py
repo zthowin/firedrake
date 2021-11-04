@@ -177,7 +177,7 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
     from tsfc.finatinterface import create_element
     arguments = slate_expr.arguments()
     if len(arguments) == 0:
-        raise NotImplementedError
+        output_arg = kernel_args.ScalarOutputKernelArg(scalar_type)
     elif len(arguments) == 1:
         argument, = arguments
         el = create_element(argument.ufl_element())

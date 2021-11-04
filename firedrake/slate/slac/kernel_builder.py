@@ -43,28 +43,28 @@ Context information for creating coefficient temporaries.
 """
 
 
-class LayerCountKernelArg(kernel_args.KernelArg):
+class LayerCountKernelArg(kernel_args.RankZeroKernelArg):
 
     name = "layer_count"
-    shape = (1,)
     dtype = np.int32
-    loopy_shape = ()
+    shape = (1,)
     intent = kernel_args.Intent.IN
 
-    # debug, when encountered try to get this right.
-    def __init__(self, *_):
-        raise NotImplementedError
+    # @property
+    # def shape(self):
+    #     raise NotImplementedError
+        # shape = (1,)
+
+    @property
+    def loopy_arg(self):
+        return loopy.GlobalArg(self.name, self.dtype, shape=())
 
 
 class LayerKernelArg(kernel_args.KernelArg):
 
     name = "layer"
     dtype = np.int32
-    intent = kernel_args.Intent.IN
-
-    # debug, when encountered try to get this right.
-    def __init__(self, *_):
-        raise NotImplementedError
+    intent = None  # we skip this in outer kernel (this is ugly)
 
     @property
     def shape(self):
@@ -72,7 +72,7 @@ class LayerKernelArg(kernel_args.KernelArg):
 
     @property
     def loopy_arg(self):
-        return loopy.ValueArg(self.name, dtype=self.dtype)
+        return loopy.ValueArg(self.name, self.dtype)
 
 
 class CellFacetKernelArg(kernel_args.KernelArg):
@@ -82,12 +82,16 @@ class CellFacetKernelArg(kernel_args.KernelArg):
     intent = kernel_args.Intent.IN
 
     def __init__(self, shape):
-        raise NotImplementedError
-        super().__init__(shape=shape)
+        self._shape = shape
+
+    @property
+    def shape(self):
+        return self._shape
 
     @property
     def loopy_arg(self):
-        return loopy.GlobalArg(self.name, shape=self.shape, dtype=self.dtype)
+        # shape = np.prod(self.shape, dtype=int)
+        return loopy.GlobalArg(self.name, shape=self._shape, dtype=self.dtype)
 
 
 class LocalKernelBuilder(object):
@@ -436,9 +440,9 @@ class LocalKernelBuilder(object):
 
 class LocalLoopyKernelBuilder(object):
 
+    local_facet_array_arg = "facet_array"
     layer_arg = "layer"
     layer_count = "layer_count"
-    cell_size_arg = "cell_sizes"  # done
     result_arg = "result"
     cell_orientations_arg = "cell_orientations"
 
@@ -581,13 +585,13 @@ class LocalLoopyKernelBuilder(object):
         select = 1 if integral_type.startswith("interior_facet") else 0
 
         i = self.bag.index_creator((1,))
-        predicates = [pym.Comparison(pym.Subscript(pym.Variable(self.cell_facets_arg), (fidx[0], 0)), "==", select)]
+        predicates = [pym.Comparison(pym.Subscript(pym.Variable(CellFacetKernelArg.name), (fidx[0], 0)), "==", select)]
 
         # TODO subdomain boundary integrals, this does the wrong thing for integrals like f*ds + g*ds(1)
         # "otherwise" is treated incorrectly as "everywhere"
         # However, this replicates an existing slate bug.
         if kinfo.subdomain_id != "otherwise":
-            predicates.append(pym.Comparison(pym.Subscript(pym.Variable(self.cell_facets_arg), (fidx[0], 1)), "==", kinfo.subdomain_id))
+            predicates.append(pym.Comparison(pym.Subscript(pym.Variable(CellFacetKernelArg.name), (fidx[0], 1)), "==", kinfo.subdomain_id))
 
         # Additional facet array argument to be fed into tsfc loopy kernel
         subscript = pym.Subscript(pym.Variable(self.local_facet_array_arg),
@@ -661,7 +665,7 @@ class LocalLoopyKernelBuilder(object):
 
                 names = []
                 for coeff in f:
-                    if isinstance(coeff, MixedElement):
+                    if type(coeff.ufl_element()) == MixedElement:
                         names += [name for name in coefficients[coeff].values()]
                     else:
                         names.append(coefficients[coeff])
@@ -719,8 +723,9 @@ class LocalLoopyKernelBuilder(object):
 
         for coeff, val in self.bag.coefficients.items():
             if isinstance(val, OrderedDict):
-                raise NotImplementedError
-                for sub_coeff, name in val.values():
+                for sub_coeff, name in val.items():
+                    assert coeff.ufl_element().family() != "Real"
+
                     finat_element = create_element(sub_coeff.ufl_element())
                     arg = kernel_args.CoefficientKernelArg(
                         name, finat_element, dtype=self.tsfc_parameters["scalar_type"]
@@ -728,15 +733,20 @@ class LocalLoopyKernelBuilder(object):
                     args.append(arg)
             else:
                 name = val
-                finat_element = create_element(coeff.ufl_element())
-                arg = kernel_args.CoefficientKernelArg(
-                    name, finat_element,
-                    dtype=self.tsfc_parameters["scalar_type"]
-                )
+                if coeff.ufl_element().family() == "Real":
+                    shape = self.extent(coeff)
+                    arg = kernel_args.ConstantKernelArg(
+                        name, shape, self.tsfc_parameters["scalar_type"]
+                    )
+                else:
+                    finat_element = create_element(coeff.ufl_element())
+                    arg = kernel_args.CoefficientKernelArg(
+                        name, finat_element,
+                        dtype=self.tsfc_parameters["scalar_type"]
+                    )
                 args.append(arg)
 
         if self.bag.needs_cell_facets:
-            raise NotImplementedError
             # Arg for is exterior (==0)/interior (==1) facet or not
             args.append(CellFacetKernelArg((self.num_facets, 2)))
 
@@ -750,7 +760,6 @@ class LocalLoopyKernelBuilder(object):
 
         # TODO There are two args added here but only one in assemble?
         if self.bag.needs_mesh_layers:
-            raise NotImplementedError
             args.append(LayerCountKernelArg())
             args.append(LayerKernelArg())
 
