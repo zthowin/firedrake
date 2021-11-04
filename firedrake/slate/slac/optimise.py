@@ -86,6 +86,7 @@ def _push_block_distributive(expr, self, indices):
 @_push_block.register(Mul)
 def _push_block_stop(expr, self, indices):
     """Blocks cannot be pushed further into this set of nodes."""
+    expr = type(expr)(*map(self, expr.children, repeat(tuple())))
     return Block(expr, indices) if indices else expr
 
 
@@ -328,6 +329,15 @@ def _push_mul_solve(expr, self, state):
                 a) multiplication from front
                 b) multiplication from back
     """
+    from firedrake import Function
+
+    def make_action(expr, pick_op, matfree):
+        # This is a use-case where we generate actions outside of the matrix-free solve
+        # reason for which is that we need to let the optimiser run on the actions too
+        arbitrary_coeff = AssembledVector(Function(expr.arg_function_spaces[pick_op]))
+        A = self(expr, ActionBag(arbitrary_coeff, pick_op)) if matfree else None
+        return A
+
     if expr.rank == 2 and state.pick_op == 0:
         """
         case 2) child 1 is matrix, child2 is matrix and a coefficient is passed through
