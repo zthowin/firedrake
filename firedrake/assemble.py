@@ -659,6 +659,8 @@ class _AssembleWrapperKernelBuilder:
             constant_layers = extruded and iterset.constant_layers
             subset = isinstance(iterset, op2.Subset)
 
+            self.extruded = extruded  # hack
+
             wrapper_kernel_args = [
                 self._as_wrapper_kernel_arg(arg, kinfo.integral_type)
                 for arg in kinfo.tsfc_kernel_args
@@ -707,12 +709,12 @@ def _(tsfc_arg, self, integral_type):
     if elem.is_mixed:
         subargs = []
         for el in elem.split():
-            subargs.append(_make_dat_wrapper_kernel_arg(el, integral_type))
+            subargs.append(_make_dat_wrapper_kernel_arg(el, integral_type, self.extruded))
         return op2.MixedDatWrapperKernelArg(subargs)
     else:
-        return _make_dat_wrapper_kernel_arg(elem, integral_type)
+        return _make_dat_wrapper_kernel_arg(elem, integral_type, self.extruded)
 
-def _make_dat_wrapper_kernel_arg(elem, integral_type):
+def _make_dat_wrapper_kernel_arg(elem, integral_type, extruded=False):
     map_id = _get_map_id(elem._elem, integral_type)
 
     finat_element = elem._elem
@@ -720,8 +722,8 @@ def _make_dat_wrapper_kernel_arg(elem, integral_type):
         finat_element = finat_element.base_element
     entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
     # offset only valid for extruded
-    if isinstance(finat_element, finat.TensorProductElement):
-        offset = calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct)
+    if extruded:
+        offset = tuple(calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct))
     else:
         offset = None
 
@@ -746,6 +748,7 @@ def _(tsfc_arg, self, integral_type):
     # DG0.
     from ufl import FiniteElement
     from tsfc.finatinterface import create_element
+    assert not self.extruded
     ufl_element = FiniteElement("DG", cell=self._expr.ufl_domain().ufl_cell(), degree=0)
     finat_element = create_element(ufl_element)
     map_id = _get_map_id(finat_element, integral_type)
@@ -763,26 +766,26 @@ def _(tsfc_arg, self, integral_type):
             subargs = []
             shape = len(relem.split()), len(celem.split())
             for rel, cel in itertools.product(relem.split(), celem.split()):
-                subargs.append(_make_mat_wrapper_kernel_arg(rel, cel, integral_type))
+                subargs.append(_make_mat_wrapper_kernel_arg(rel, cel, integral_type, self.extruded))
             return op2.MixedMatWrapperKernelArg(subargs, shape)
         else:
             subargs = []
             shape = len(relem.split()), 1
             for rel in relem.split():
-                subargs.append(_make_mat_wrapper_kernel_arg(rel, celem, integral_type))
+                subargs.append(_make_mat_wrapper_kernel_arg(rel, celem, integral_type, self.extruded))
             return op2.MixedMatWrapperKernelArg(subargs, shape)
     else:
         if celem.is_mixed:
             shape = 1, len(celem.split())
             subargs = []
             for cel in celem.split():
-                subargs.append(_make_mat_wrapper_kernel_arg(relem, cel, integral_type))
+                subargs.append(_make_mat_wrapper_kernel_arg(relem, cel, integral_type, self.extruded))
             return op2.MixedMatWrapperKernelArg(subargs, shape)
         else:
-            return _make_mat_wrapper_kernel_arg(relem, celem, integral_type)
+            return _make_mat_wrapper_kernel_arg(relem, celem, integral_type, self.extruded)
 
 
-def _make_mat_wrapper_kernel_arg(relem, celem, integral_type):
+def _make_mat_wrapper_kernel_arg(relem, celem, integral_type, extruded=False):
     rmap_id = _get_map_id(relem._elem, integral_type)
     cmap_id = _get_map_id(celem._elem, integral_type)
 
@@ -790,9 +793,8 @@ def _make_mat_wrapper_kernel_arg(relem, celem, integral_type):
 
     finat_element = relem._elem
     entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
-    # offset only valid for extruded
-    if isinstance(finat_element, finat.TensorProductElement):
-        roffset = calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct)
+    if extruded:
+        roffset = tuple(calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct))
     else:
         roffset = None
 
@@ -800,9 +802,8 @@ def _make_mat_wrapper_kernel_arg(relem, celem, integral_type):
 
     finat_element = celem._elem
     entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
-    # offset only valid for extruded
-    if isinstance(finat_element, finat.TensorProductElement):
-        coffset = calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct)
+    if extruded:
+        coffset = tuple(calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct))
     else:
         coffset = None
 
