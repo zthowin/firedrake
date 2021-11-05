@@ -411,9 +411,9 @@ def preprocess_finat_element(finat_element):
     :returns: A tuple of the FInAT element, entity_dofs, nodes_per_entity,
         and real_tensorproduct derived from ufl_element.
     """
-    if (isinstance(finat_element, finat.EnrichedElement)
-            and isinstance(finat_element.fiat_equivalent, FIAT.MixedElement)):
+    if isinstance(finat_element, finat.EnrichedElement) and finat_element.is_mixed:
         raise ValueError("Can't create FunctionSpace for MixedElement")
+
     # Support foo x Real tensorproduct elements
     real_tensorproduct = False
     scalar_element = finat_element

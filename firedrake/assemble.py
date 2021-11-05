@@ -1,4 +1,5 @@
 import abc
+import collections
 from collections import OrderedDict, defaultdict
 import dataclasses
 from dataclasses import dataclass
@@ -702,9 +703,19 @@ def _(tsfc_arg, self, integral_type):
 
 @_as_wrapper_kernel_arg.register(kernel_args.RankOneKernelArg)
 def _(tsfc_arg, self, integral_type):
-    map_id = _get_map_id(tsfc_arg._elem._elem, integral_type)
+    elem = tsfc_arg._elem
+    if elem.is_mixed:
+        subargs = []
+        for el in elem.split():
+            subargs.append(_make_dat_wrapper_kernel_arg(el, integral_type))
+        return op2.MixedDatWrapperKernelArg(subargs)
+    else:
+        return _make_dat_wrapper_kernel_arg(elem, integral_type)
 
-    finat_element = tsfc_arg._elem._elem
+def _make_dat_wrapper_kernel_arg(elem, integral_type):
+    map_id = _get_map_id(elem._elem, integral_type)
+
+    finat_element = elem._elem
     if isinstance(finat_element, finat.TensorFiniteElement):
         finat_element = finat_element.base_element
     entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
@@ -714,8 +725,8 @@ def _(tsfc_arg, self, integral_type):
     else:
         offset = None
 
-    map_arg = op2.MapWrapperKernelArg(map_id, tsfc_arg.node_shape, offset)
-    return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
+    map_arg = op2.MapWrapperKernelArg(map_id, elem.node_shape, offset)
+    return op2.DatWrapperKernelArg(elem.tensor_shape, map_arg)
 
 
 @_as_wrapper_kernel_arg.register(kernel_args.FacetKernelArg)
@@ -729,18 +740,16 @@ def _(tsfc_arg, self, integral_type):
     return op2.DatWrapperKernelArg(tsfc_arg.shape)
 
 
-# This argument does not get seen in the wrapper kernel (i.e. pass_layer_arg)
-@_as_wrapper_kernel_arg.register(LayerKernelArg)
-def _(*args, **kwargs):
-    pass
-
-
 @_as_wrapper_kernel_arg.register(kernel_args.CellOrientationsKernelArg)
 def _(tsfc_arg, self, integral_type):
-    # TODO Here we assume:
-    # - There will only ever be one cell orientations map
-    # - This map is not used by any other data structures
-    map_arg = op2.MapWrapperKernelArg("cell_orientations", tsfc_arg.node_shape)
+    # this is taken largely from mesh.py where we observe that the function space is
+    # DG0.
+    from ufl import FiniteElement
+    from tsfc.finatinterface import create_element
+    ufl_element = FiniteElement("DG", cell=self._expr.ufl_domain().ufl_cell(), degree=0)
+    finat_element = create_element(ufl_element)
+    map_id = _get_map_id(finat_element, integral_type)
+    map_arg = op2.MapWrapperKernelArg(map_id, tsfc_arg.node_shape)
     return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
 
 
@@ -895,7 +904,6 @@ class ParloopExecutor:
             for tsfc_arg in self._knl.tsfc_args if tsfc_arg.intent is not None
         ]
         try:
-            # import pdb; pdb.set_trace()
             op2.parloop(self._knl.pyop2_kernel, self._iterset, parloop_args)
         except MapValueError:
             raise RuntimeError("Integral measure does not match measure of all "
@@ -1039,7 +1047,11 @@ def _execute_parloop(*args, **kwargs):
 
 # TODO put in utils
 def _tuplify(params):
-    return tuple((k, params[k]) for k in sorted(params))
+    if isinstance(params, collections.Hashable):
+        return (params,)
+
+    assert isinstance(params, dict)
+    return tuple((k, _tuplify(params[k])) for k in sorted(params))
 
 
 def _get_iterset(expr, kinfo, all_integer_subdomain_ids):

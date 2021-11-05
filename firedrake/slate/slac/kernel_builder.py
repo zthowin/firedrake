@@ -522,7 +522,6 @@ class LocalLoopyKernelBuilder(object):
                         kernel_args.CoordinatesKernelArg.name)]
 
         if kinfo.oriented:
-            raise NotImplementedError
             self.bag.needs_cell_orientations = True
             kernel_data.append((mesh.cell_orientations(),
                                 kernel_args.CellOrientationsKernelArg.name))
@@ -710,10 +709,8 @@ class LocalLoopyKernelBuilder(object):
         args = [kernel_args.CoordinatesKernelArg(coords_el, dtype=self.tsfc_parameters["scalar_type"])]
 
         if self.bag.needs_cell_orientations:
-            raise NotImplementedError
             ori_extent = self.extent(self.expression.ufl_domain().cell_orientations())
-            args.append(kernel_args.CellOrientationsKernelArg(
-                        shape=ori_extent, dtype=self.tsfc_parameters["scalar_type"]))
+            args.append(kernel_args.CellOrientationsKernelArg(ori_extent))
 
         if self.bag.needs_cell_sizes:
             raise NotImplementedError
