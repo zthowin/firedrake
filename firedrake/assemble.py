@@ -1009,13 +1009,41 @@ def _(tsfc_arg, self, wrapper_kernel, **kwargs):
 
 
 @_as_parloop_arg.register(kernel_args.ScalarOutputKernelArg)
-def _(tsfc_arg, self, *args, **kwargs):
-    return op2.GlobalParloopArg(self._tensor)
+def _(tsfc_arg, self, wrapper_kernel, **kwargs):
+    # For real assembly self._tensor is a Function, for normal assembly it is a Global.
+    if isinstance(self._tensor, op2.Global):
+        return op2.GlobalParloopArg(self._tensor)
+    elif isinstance(self._tensor, firedrake.Function):
+        i, = wrapper_kernel.tsfc_kernel.indices
+        if i is None:
+            return op2.GlobalParloopArg(self._tensor.dat)
+        else:
+            return op2.GlobalParloopArg(self._tensor.dat[i])
+    elif isinstance(self._tensor, firedrake.matrix.Matrix):
+        # Matrices also have to handle global blocks
+        return op2.GlobalParloopArg(self._tensor.M.handle.getPythonContext().global_)
+    else:
+        raise AssertionError
 
 
 @_as_parloop_arg.register(kernel_args.VectorOutputKernelArg)
 def _(tsfc_arg, self, wrapper_kernel, **kwargs):
+    tensor = self._tensor
     kinfo = wrapper_kernel.tsfc_kernel.kinfo
+
+    # Handle global blocks (from real)
+    if isinstance(self._tensor, firedrake.matrix.Matrix):
+        i, j = wrapper_kernel.tsfc_kernel.indices
+        test, trial = tensor.a.arguments()
+        if i is None and j is None:
+            rmap = self._get_map(test.function_space(), kinfo.integral_type)
+            cmap = self._get_map(trial.function_space(), kinfo.integral_type)
+        else:
+            assert i is not None and j is not None
+            rmap = self._get_map(test.function_space()[i], kinfo.integral_type)
+            cmap = self._get_map(trial.function_space()[j], kinfo.integral_type)
+        map_ = rmap or cmap
+        return op2.DatParloopArg(tensor.M.handle.getPythonContext().dat, map_)
 
     i, = wrapper_kernel.tsfc_kernel.indices
     if i is None:
