@@ -170,16 +170,27 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
     gem_expr, var2terminal = slate_to_gem(slate_expr, compiler_parameters["slate_compiler"])
 
     scalar_type = compiler_parameters["form_compiler"]["scalar_type"]
-    slate_loopy, output_arg = gem_to_loopy(gem_expr, var2terminal, scalar_type)
-
+    slate_loopy_name = "slate_loopy"
+    (slate_loopy, ctx_g2l), output_arg = gem_to_loopy(gem_expr, var2terminal, scalar_type, slate_loopy_name)
     builder = LocalLoopyKernelBuilder(expression=slate_expr,
-                                      tsfc_parameters=compiler_parameters["form_compiler"])
+                                      tsfc_parameters=compiler_parameters["form_compiler"],
+                                      slate_loopy_name=slate_loopy_name)
 
-    name = "slate_wrapper"
-    loopy_merged = merge_loopy(slate_loopy, output_arg, builder, var2terminal, name)
+    if compiler_parameters["slate_compiler"]["optimise"]:
+        name = "slate_loopy"
+        loopy_merged = merge_loopy(slate_loopy, output_arg, builder, var2terminal,
+                                   name, ctx_g2l, "when_needed", slate_expr,
+                                   compiler_parameters["form_compiler"], compiler_parameters["slate_compiler"])
+    else:
+        name = "wrap_slate_loopy"
+        loopy_merged = merge_loopy(slate_loopy, output_arg, builder, var2terminal,
+                                   name, ctx_g2l, "terminals_first", slate_expr,
+                                   compiler_parameters["form_compiler"])
+
     loopy_merged = loopy.register_callable(loopy_merged, INVCallable.name, INVCallable())
     loopy_merged = loopy.register_callable(loopy_merged, SolveCallable.name, SolveCallable())
 
+    print("LOOPYMERGED", loopy_merged)
     loopykernel = op2.Kernel(loopy_merged,
                              name,
                              include_dirs=BLASLAPACK_INCLUDE.split(),
@@ -636,7 +647,7 @@ def parenthesize(arg, prec=None, parent=None):
     return "(%s)" % arg
 
 
-def gem_to_loopy(gem_expr, var2terminal, scalar_type):
+def gem_to_loopy(gem_expr, var2terminal, scalar_type, knl_name, out_name="output", matfree=False):
     """ Method encapsulating stage 2.
     Converts the gem expression dag into imperoc first, and then further into loopy.
     :return slate_loopy: 2-tuple of loopy kernel for slate operations
@@ -646,21 +657,29 @@ def gem_to_loopy(gem_expr, var2terminal, scalar_type):
     shape = gem_expr.shape if len(gem_expr.shape) != 0 else (1,)
     idx = make_indices(len(shape))
     indexed_gem_expr = gem.Indexed(gem_expr, idx)
-    args = ([loopy.GlobalArg("output", shape=shape, dtype=scalar_type, is_output=True, is_input=True)]
-            + [loopy.GlobalArg(var.name, shape=var.shape, dtype=scalar_type)
-               for var in var2terminal.keys()])
-    ret_vars = [gem.Indexed(gem.Variable("output", shape), idx)]
+    args = ([loopy.GlobalArg(out_name, shape=shape, dtype=scalar_type, target=loopy.CTarget(), is_input=True, is_output=True, dim_tags=None, strides=loopy.auto, order="C")])
+    for var, terminal in var2terminal.items():
+        if hasattr(var, "name") and var.name not in [a.name for a in args]:
+            # FIXME we should probably just have two dicts
+            # From the var2terminal dict we only want to append vector-shaped args
+            # which are coming from AssembledVectors to the global args of the Slate kernel,
+            # meaning we don't want to append anything matrix shaped and also not the matrices inside solves or actions
+            if not terminal.terminal or (terminal.rank > 1 and matfree):
+                t_shape = var.shape if var.shape else (1,)
+                args.append(loopy.TemporaryVariable(var.name, shape=t_shape, dtype=scalar_type, address_space=loopy.AddressSpace.LOCAL, target=loopy.CTarget()))
+            else:
+                args.append(loopy.GlobalArg(var.name, shape=var.shape, dtype=scalar_type, target=loopy.CTarget()))
 
     preprocessed_gem_expr = impero_utils.preprocess_gem([indexed_gem_expr])
 
     # glue assignments to return variable
-    assignments = list(zip(ret_vars, preprocessed_gem_expr))
+    assignments = list(zip([gem.Indexed(gem.Variable(out_name, shape), idx)], preprocessed_gem_expr))
 
     # Part A: slate to impero_c
     impero_c = impero_utils.compile_gem(assignments, (), remove_zeros=False)
 
     # Part B: impero_c to loopy
-    return generate_loopy(impero_c, args, scalar_type, "slate_loopy", []), args[0].copy()
+    return generate_loopy(impero_c, args, scalar_type, knl_name, [], return_ctx=True, iname_prefix=knl_name+"_"), args[0].copy()
 
 
 def slate_to_cpp(expr, temps, prec=None):
