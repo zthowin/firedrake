@@ -750,7 +750,7 @@ def _(tsfc_arg, self, integral_type):
     from tsfc.finatinterface import create_element
     assert not self.extruded
     ufl_element = FiniteElement("DG", cell=self._expr.ufl_domain().ufl_cell(), degree=0)
-    finat_element = create_element(ufl_element)
+    finat_element = _as_scalar_element(create_element(ufl_element))
     map_id = _get_map_id(finat_element, integral_type)
     map_arg = op2.MapWrapperKernelArg(map_id, tsfc_arg.node_shape)
     return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
@@ -791,7 +791,7 @@ def _make_mat_wrapper_kernel_arg(relem, celem, integral_type, extruded=False):
 
     ###
 
-    finat_element = relem._elem
+    finat_element = _as_scalar_element(relem._elem)
     entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
     if extruded:
         roffset = tuple(calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct))
@@ -800,7 +800,7 @@ def _make_mat_wrapper_kernel_arg(relem, celem, integral_type, extruded=False):
 
     ###
 
-    finat_element = celem._elem
+    finat_element = _as_scalar_element(celem._elem)
     entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
     if extruded:
         coffset = tuple(calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct))
@@ -818,6 +818,10 @@ def _make_mat_wrapper_kernel_arg(relem, celem, integral_type, extruded=False):
 
     return op2.MatWrapperKernelArg(((rdim+cdim,),), (rmap_arg, cmap_arg))
 
+
+def _as_scalar_element(elem):
+    # This is done to mirror what happens in functionspacedata.py
+    return elem.base_element if isinstance(elem, finat.TensorFiniteElement) else elem
 
 
 def _get_map_id(finat_element, integral_type):
