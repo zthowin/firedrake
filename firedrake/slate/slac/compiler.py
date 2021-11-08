@@ -396,7 +396,8 @@ def generate_kernel_ast(builder, statements, declared_temps):
                        coefficient_map=slate_expr.coeff_map,
                        needs_cell_facets=builder.needs_cell_facets,
                        pass_layer_arg=builder.needs_mesh_layers,
-                       needs_cell_sizes=builder.needs_cell_sizes)
+                       needs_cell_sizes=builder.needs_cell_sizes,
+                       tsfc_kernel_args=None)
 
     return kinfo
 
