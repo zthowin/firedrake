@@ -451,7 +451,14 @@ class _TwoFormAssembler(_FormAssembler):
             # the wrapper kernel.
             if unroll:
                 old_arg = knl.pyop2_kernel.arguments[0]
-                new_arg = dataclasses.replace(old_arg, unroll=True)
+                if isinstance(old_arg, op2.MatWrapperKernelArg):
+                    new_arg = dataclasses.replace(old_arg, unroll=True)
+                elif isinstance(old_arg, op2.MixedMatWrapperKernelArg):
+                    new_arguments = tuple(dataclasses.replace(subarg, unroll=True)
+                                          for subarg in old_arg.arguments)
+                    new_arg = dataclasses.replace(old_arg, arguments=new_arguments)
+                else:
+                    raise AssertionError
                 pyop2_kernel = pyop2.wrapper_kernel.replace_argument(knl.pyop2_kernel, old_arg, new_arg)
                 knl = dataclasses.replace(knl, pyop2_kernel=pyop2_kernel)
 
@@ -710,7 +717,7 @@ def _(tsfc_arg, self, integral_type):
         subargs = []
         for el in elem.split():
             subargs.append(_make_dat_wrapper_kernel_arg(el, integral_type, self.extruded))
-        return op2.MixedDatWrapperKernelArg(subargs)
+        return op2.MixedDatWrapperKernelArg(tuple(subargs))
     else:
         return _make_dat_wrapper_kernel_arg(elem, integral_type, self.extruded)
 
@@ -767,20 +774,20 @@ def _(tsfc_arg, self, integral_type):
             shape = len(relem.split()), len(celem.split())
             for rel, cel in itertools.product(relem.split(), celem.split()):
                 subargs.append(_make_mat_wrapper_kernel_arg(rel, cel, integral_type, self.extruded))
-            return op2.MixedMatWrapperKernelArg(subargs, shape)
+            return op2.MixedMatWrapperKernelArg(tuple(subargs), shape)
         else:
             subargs = []
             shape = len(relem.split()), 1
             for rel in relem.split():
                 subargs.append(_make_mat_wrapper_kernel_arg(rel, celem, integral_type, self.extruded))
-            return op2.MixedMatWrapperKernelArg(subargs, shape)
+            return op2.MixedMatWrapperKernelArg(tuple(subargs), shape)
     else:
         if celem.is_mixed:
             shape = 1, len(celem.split())
             subargs = []
             for cel in celem.split():
                 subargs.append(_make_mat_wrapper_kernel_arg(relem, cel, integral_type, self.extruded))
-            return op2.MixedMatWrapperKernelArg(subargs, shape)
+            return op2.MixedMatWrapperKernelArg(tuple(subargs), shape)
         else:
             return _make_mat_wrapper_kernel_arg(relem, celem, integral_type, self.extruded)
 
