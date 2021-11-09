@@ -865,6 +865,8 @@ def _get_map_type(integral_type):
         raise AssertionError
 
 
+# TODO This does not know how to handle the subset=False/True distinction so we get
+# erroneous hits. What do?
 def _wrapper_kernel_cache_key(form, **kwargs):
     if isinstance(form, ufl.Form):
         sig = form.signature()
@@ -877,7 +879,7 @@ def _wrapper_kernel_cache_key(form, **kwargs):
     )
 
 
-@cachetools.cached(cachetools.LRUCache(maxsize=128), key=_wrapper_kernel_cache_key)
+# @cachetools.cached(cachetools.LRUCache(maxsize=128), key=_wrapper_kernel_cache_key)
 def _make_wrapper_kernels(*args, **kwargs):
     return _AssembleWrapperKernelBuilder(*args, **kwargs).build()
 

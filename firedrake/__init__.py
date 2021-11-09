@@ -32,6 +32,7 @@ if _is_logging:
     del atexit
 
 _blas_lib_path = petsc.get_blas_library()
+petsc.PETSc.Sys.popErrorHandler()
 del petsc
 
 # UFL Exprs come with a custom __del__ method, but we hold references
