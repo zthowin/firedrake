@@ -734,6 +734,10 @@ def _make_dat_wrapper_kernel_arg(elem, integral_type, extruded=False):
     else:
         offset = None
 
+    # For interior facet integrals we double the size of the offset array
+    if integral_type in {"interior_facet", "interior_facet_vert"}:
+        offset += offset
+
     map_arg = op2.MapWrapperKernelArg(map_id, elem.node_shape, offset)
     return op2.DatWrapperKernelArg(elem.tensor_shape, map_arg)
 
@@ -815,6 +819,11 @@ def _make_mat_wrapper_kernel_arg(relem, celem, integral_type, extruded=False):
         coffset = None
 
     ###
+
+    # For interior facet integrals we double the size of the offset array
+    if integral_type in {"interior_facet", "interior_facet_vert"}:
+        roffset += roffset
+        coffset += coffset
 
     rmap_arg = op2.MapWrapperKernelArg(rmap_id, relem.node_shape, roffset)
     cmap_arg = op2.MapWrapperKernelArg(cmap_id, celem.node_shape, coffset)
