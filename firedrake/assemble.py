@@ -662,7 +662,7 @@ class _AssembleWrapperKernelBuilder:
             iterset = _get_iterset(self._expr, kinfo, all_integer_subdomain_ids)
 
             # TODO This information should be available from UFL
-            extruded = isinstance(iterset, op2.ExtrudedSet)
+            extruded = iterset._extruded
             constant_layers = extruded and iterset.constant_layers
             subset = isinstance(iterset, op2.Subset)
 
