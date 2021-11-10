@@ -402,6 +402,17 @@ def entity_permutations_key(entity_permutations):
     key = tuple(key)
     return key
 
+def is_real_tensor_product(ufl_element):
+    real_tensorproduct = False
+
+    scalar_element = ufl_element
+    if isinstance(ufl_element, (ufl.VectorElement, ufl.TensorElement)):
+        scalar_element = ufl_element.sub_elements()[0]
+    if isinstance(scalar_element, ufl.TensorProductElement):
+        a, b = scalar_element.sub_elements()
+        real_tensorproduct = b.family() == "Real"
+    return real_tensorproduct
+
 
 def preprocess_finat_element(finat_element):
     """Preprocess a UFL element for descretised representation
@@ -414,17 +425,8 @@ def preprocess_finat_element(finat_element):
     if isinstance(finat_element, finat.EnrichedElement) and finat_element.is_mixed:
         raise ValueError("Can't create FunctionSpace for MixedElement")
 
-    # Support foo x Real tensorproduct elements
-    real_tensorproduct = False
-    scalar_element = finat_element
-    if isinstance(finat_element, finat.TensorFiniteElement):
-        scalar_element = finat_element.base_element
-    if isinstance(scalar_element, finat.TensorProductElement):
-        a, b = scalar_element.factors
-        # TODO I don't know a way to check this using a FInAT element
-        # real_tensorproduct = b.family() == 'Real'
     entity_dofs = finat_element.entity_dofs()
-    return entity_dofs, real_tensorproduct
+    return entity_dofs
 
 
 class FunctionSpaceData(object):
@@ -441,8 +443,9 @@ class FunctionSpaceData(object):
 
     @PETSc.Log.EventDecorator()
     def __init__(self, mesh, ufl_element):
+        real_tensorproduct = is_real_tensor_product(ufl_element)
         finat_element = create_element(ufl_element)
-        entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
+        entity_dofs = preprocess_finat_element(finat_element)
         nodes_per_entity = tuple(mesh.make_dofs_per_plex_entity(entity_dofs))
         try:
             entity_permutations = finat_element.entity_permutations

@@ -722,12 +722,13 @@ def _(tsfc_arg, self, integral_type):
         return _make_dat_wrapper_kernel_arg(elem, integral_type, self.extruded)
 
 def _make_dat_wrapper_kernel_arg(elem, integral_type, extruded=False):
-    map_id = _get_map_id(elem._elem, integral_type)
+    map_id = _get_map_id(elem._elem, elem._is_real_tensor_product, integral_type)
 
     finat_element = elem._elem
+    real_tensorproduct = elem._is_real_tensor_product
     if isinstance(finat_element, finat.TensorFiniteElement):
         finat_element = finat_element.base_element
-    entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
+    entity_dofs = preprocess_finat_element(finat_element)
     # offset only valid for extruded
     if extruded:
         offset = tuple(calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct))
@@ -762,7 +763,7 @@ def _(tsfc_arg, self, integral_type):
     assert not self.extruded
     ufl_element = FiniteElement("DG", cell=self._expr.ufl_domain().ufl_cell(), degree=0)
     finat_element = _as_scalar_element(create_element(ufl_element))
-    map_id = _get_map_id(finat_element, integral_type)
+    map_id = _get_map_id(finat_element, False, integral_type)
     map_arg = op2.MapWrapperKernelArg(map_id, tsfc_arg.node_shape)
     return op2.DatWrapperKernelArg(tsfc_arg.shape, map_arg)
 
@@ -797,13 +798,14 @@ def _(tsfc_arg, self, integral_type):
 
 
 def _make_mat_wrapper_kernel_arg(relem, celem, integral_type, extruded=False):
-    rmap_id = _get_map_id(relem._elem, integral_type)
-    cmap_id = _get_map_id(celem._elem, integral_type)
+    rmap_id = _get_map_id(relem._elem, relem._is_real_tensor_product, integral_type)
+    cmap_id = _get_map_id(celem._elem, celem._is_real_tensor_product, integral_type)
 
     ###
 
     finat_element = _as_scalar_element(relem._elem)
-    entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
+    real_tensorproduct = relem._is_real_tensor_product
+    entity_dofs = preprocess_finat_element(finat_element)
     if extruded:
         roffset = tuple(calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct))
     else:
@@ -812,7 +814,8 @@ def _make_mat_wrapper_kernel_arg(relem, celem, integral_type, extruded=False):
     ###
 
     finat_element = _as_scalar_element(celem._elem)
-    entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
+    real_tensorproduct = celem._is_real_tensor_product
+    entity_dofs = preprocess_finat_element(finat_element)
     if extruded:
         coffset = tuple(calc_offset(finat_element.cell, entity_dofs, finat_element.space_dimension(), real_tensorproduct))
     else:
@@ -840,7 +843,7 @@ def _as_scalar_element(elem):
     return elem.base_element if isinstance(elem, finat.TensorFiniteElement) else elem
 
 
-def _get_map_id(finat_element, integral_type):
+def _get_map_id(finat_element, real_tensorproduct, integral_type):
     """Return a key that is used to check if we reuse maps.
 
     functionspacedata.py does the same thing.
@@ -850,7 +853,7 @@ def _get_map_id(finat_element, integral_type):
     if isinstance(finat_element, finat.TensorFiniteElement):
         finat_element = finat_element.base_element
 
-    entity_dofs, real_tensorproduct = preprocess_finat_element(finat_element)
+    entity_dofs = preprocess_finat_element(finat_element)
     try:
         eperm_key = entity_permutations_key(finat_element.entity_permutations)
     except NotImplementedError:
