@@ -760,7 +760,6 @@ def _(tsfc_arg, self, integral_type):
     # DG0.
     from ufl import FiniteElement
     from tsfc.finatinterface import create_element
-    assert not self.extruded
     ufl_element = FiniteElement("DG", cell=self._expr.ufl_domain().ufl_cell(), degree=0)
     finat_element = _as_scalar_element(create_element(ufl_element))
     map_id = _get_map_id(finat_element, False, integral_type)
@@ -879,18 +878,29 @@ def _get_map_type(integral_type):
         raise AssertionError
 
 
-# TODO This does not know how to handle the subset=False/True distinction so we get
-# erroneous hits. What do?
 def _wrapper_kernel_cache_key(form, **kwargs):
     if isinstance(form, ufl.Form):
         sig = form.signature()
     elif isinstance(form, slate.TensorBase):
         sig = form.expression_hash
-    return (
-        (sig,)
-        + _tuplify(kwargs.pop("form_compiler_params", None) or {})
-        + cachetools.keys.hashkey(**kwargs)
-    )
+
+    # The form signature does not store this information. This should be accessible from
+    # the UFL so we don't need this nasty hack.
+    subdomain_key = []
+    for val in form.subdomain_data().values():
+        for k, v in val.items():
+            if v is not None:
+                extruded = v._extruded
+                constant_layers = extruded and v.constant_layers
+                subset = isinstance(v, op2.Subset)
+                subdomain_key.append((k, extruded, constant_layers, subset))
+            else:
+                subdomain_key.append((k,))
+
+    return ((sig,)
+            + tuple(subdomain_key)
+            + _tuplify(kwargs.pop("form_compiler_params", None) or {})
+            + cachetools.keys.hashkey(**kwargs))
 
 
 @cachetools.cached(cachetools.LRUCache(maxsize=128), key=_wrapper_kernel_cache_key)
