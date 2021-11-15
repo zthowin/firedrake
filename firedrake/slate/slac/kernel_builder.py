@@ -706,7 +706,8 @@ class LocalLoopyKernelBuilder(object):
         import tsfc
 
         coords_el = tsfc.finatinterface.create_element(coords.ufl_element())
-        args = [kernel_args.CoordinatesKernelArg(coords_el, dtype=self.tsfc_parameters["scalar_type"])]
+        isreal = coords.ufl_element().family() == "Real"
+        args = [kernel_args.CoordinatesKernelArg(coords_el, isreal, dtype=self.tsfc_parameters["scalar_type"])]
 
         if self.bag.needs_cell_orientations:
             ori_extent = self.extent(self.expression.ufl_domain().cell_orientations())
@@ -738,7 +739,7 @@ class LocalLoopyKernelBuilder(object):
                 else:
                     finat_element = create_element(coeff.ufl_element())
                     arg = kernel_args.CoefficientKernelArg(
-                        name, finat_element,
+                        name, finat_element, False,
                         dtype=self.tsfc_parameters["scalar_type"]
                     )
                 args.append(arg)

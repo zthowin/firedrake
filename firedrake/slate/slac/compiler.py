@@ -16,6 +16,8 @@ this templated function library.
 """
 from coffee import base as ast
 
+from dataclasses import dataclass
+from cachetools import cached, LRUCache
 import time
 from hashlib import md5
 
@@ -84,23 +86,24 @@ if not complex_mode:
 cell_to_facets_dtype = np.dtype(np.int8)
 
 
-class SlateKernel(TSFCKernel):
-    @classmethod
-    def _cache_key(cls, expr, compiler_parameters, coffee):
-        # TODO temporarily disable caching
-        return None
-        return md5((expr.expression_hash
-                    + str(sorted(compiler_parameters.items()))
-                    + str(coffee)).encode()).hexdigest(), expr.ufl_domains()[0].comm
+@dataclass(frozen=True)
+class SlateKernel:
 
-    def __init__(self, expr, compiler_parameters, coffee=False):
-        if self._initialized:
-            return
-        if coffee:
-            self.split_kernel = generate_kernel(expr, compiler_parameters)
-        else:
-            self.split_kernel = generate_loopy_kernel(expr, compiler_parameters)
-        self._initialized = True
+    split_kernel: tuple
+
+def slate_kernel_key(expr, compiler_parameters, coffee):
+    return md5((expr.expression_hash
+                + str(sorted(compiler_parameters.items()))
+                + str(coffee)).encode()).hexdigest(), expr.ufl_domains()[0].comm.py2f()
+
+
+@cached(LRUCache(maxsize=128), key=slate_kernel_key)
+def make_slate_kernel(expr, compiler_parameters, coffee=False):
+    if coffee:
+        split_kernel = generate_kernel(expr, compiler_parameters)
+    else:
+        split_kernel = generate_loopy_kernel(expr, compiler_parameters)
+    return SlateKernel(split_kernel)
 
 
 def compile_expression(slate_expr, compiler_parameters=None, coffee=False):
@@ -133,7 +136,7 @@ def compile_expression(slate_expr, compiler_parameters=None, coffee=False):
     try:
         return cache[key]
     except KeyError:
-        kernel = SlateKernel(slate_expr, params, coffee).split_kernel
+        kernel = make_slate_kernel(slate_expr, params, coffee).split_kernel
         return cache.setdefault(key, kernel)
 
 
@@ -181,12 +184,19 @@ def generate_loopy_kernel(slate_expr, compiler_parameters=None):
     elif len(arguments) == 1:
         argument, = arguments
         el = create_element(argument.ufl_element())
-        output_arg = kernel_args.VectorOutputKernelArg(el, dtype=scalar_type)
+        isreal = argument.ufl_element().family() == "Real"
+        output_arg = kernel_args.VectorOutputKernelArg(el, isreal, dtype=scalar_type)
     elif len(arguments) == 2:
         rargument, cargument = arguments
-        rel = create_element(rargument.ufl_element())
-        cel = create_element(cargument.ufl_element())
-        output_arg = kernel_args.MatrixOutputKernelArg(rel, cel, dtype=scalar_type)
+        rufl = rargument.ufl_element()
+        rel = create_element(rufl)
+        risreal = rufl.family() == "Real"
+
+        cufl = cargument.ufl_element()
+        cel = create_element(cufl)
+        cisreal = cufl.family() == "Real"
+
+        output_arg = kernel_args.MatrixOutputKernelArg(rel, risreal, cel, cisreal, dtype=scalar_type)
     else:
         raise AssertionError
 

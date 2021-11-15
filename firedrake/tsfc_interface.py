@@ -6,9 +6,12 @@ passing to the backends.
 """
 import pickle
 
+from cachetools import cached, LRUCache
+from dataclasses import dataclass
 from hashlib import md5
 from os import path, environ, getuid, makedirs
 import os
+import gzip, zlib
 import tempfile
 import collections
 
@@ -47,75 +50,89 @@ KernelInfo = collections.namedtuple("KernelInfo",
                                      "tsfc_kernel_args"])
 
 
-class TSFCKernel(Cached):
+@dataclass(frozen=True)
+class TSFCKernel:
 
-    _cache = {}
+    kernels: tuple
 
-    _cachedir = environ.get('FIREDRAKE_TSFC_KERNEL_CACHE_DIR',
-                            path.join(tempfile.gettempdir(),
-                                      'firedrake-tsfc-kernel-cache-uid%d' % getuid()))
+# class TSFCKernel(Cached):
 
-    @classmethod
-    def _cache_lookup(cls, key):
-        key, comm = key
-        # comm has to be part of the in memory key so that when
-        # compiling the same code on different subcommunicators we
-        # don't get deadlocks. But MPI_Comm objects are not hashable,
-        # so use comm.py2f() since this is an internal communicator and
-        # hence the C handle is stable.
-        commkey = comm.py2f()
-        assert commkey != MPI.COMM_NULL.py2f()
-        return cls._cache.get((key, commkey)) or cls._read_from_disk(key, comm)
+#     _cache = {}
 
-    @classmethod
-    def _read_from_disk(cls, key, comm):
-        if comm.rank == 0:
-            filepath = os.path.join(cls._cachedir, key[:2], key[2:])
-            try:
-                with open(filepath, "rb") as f:
-                    val = pickle.load(f)
-            except FileNotFoundError:
-                raise KeyError(f"Object with key {key} not found")
-            comm.bcast(val, root=0)
-        else:
-            val = comm.bcast(None, root=0)
+#     _cachedir = environ.get('FIREDRAKE_TSFC_KERNEL_CACHE_DIR',
+#                             path.join(tempfile.gettempdir(),
+#                                       'firedrake-tsfc-kernel-cache-uid%d' % getuid()))
 
-        return cls._cache.setdefault((key, comm.py2f()), val)
+#     @classmethod
+#     def _cache_lookup(cls, key):
+#         key, comm = key
+#         # comm has to be part of the in memory key so that when
+#         # compiling the same code on different subcommunicators we
+#         # don't get deadlocks. But MPI_Comm objects are not hashable,
+#         # so use comm.py2f() since this is an internal communicator and
+#         # hence the C handle is stable.
+#         commkey = comm.py2f()
+#         assert commkey != MPI.COMM_NULL.py2f()
+#         return cls._cache.get((key, commkey)) or cls._read_from_disk(key, comm)
 
-    @classmethod
-    def _cache_store(cls, key, val):
-        key, comm = key
-        cls._cache[(key, comm.py2f())] = val
-        _ensure_cachedir(comm=comm)
-        if comm.rank == 0:
-            val._key = key
-            shard, disk_key = key[:2], key[2:]
-            filepath = os.path.join(cls._cachedir, shard, disk_key)
-            tempfile = os.path.join(cls._cachedir, shard, "%s_p%d.tmp" % (disk_key, os.getpid()))
-            # No need for a barrier after this, since non root
-            # processes will never race on this file.
-            os.makedirs(os.path.join(cls._cachedir, shard), exist_ok=True)
-            with open(tempfile, "wb") as f:
-                pickle.dump(val, f)
-            os.rename(tempfile, filepath)
-        comm.barrier()
+#     @classmethod
+#     def _read_from_disk(cls, key, comm):
+#         if comm.rank == 0:
+#             cache = cls._cachedir
+#             shard, disk_key = key[:2], key[2:]
+#             filepath = os.path.join(cache, shard, disk_key)
+#             val = None
+#             if os.path.exists(filepath):
+#                 try:
+#                     with gzip.open(filepath, "rb") as f:
+#                         val = f.read()
+#                 except zlib.error:
+#                     pass
 
-    @classmethod
-    def _cache_key(cls, form, name, parameters, number_map, interface, coffee=False, diagonal=False):
-        # TODO Actually fix this properly - for now just disable caching
-        return None
-        # FIXME Making the COFFEE parameters part of the cache key causes
-        # unnecessary repeated calls to TSFC when actually only the kernel code
-        # needs to be regenerated
-        return md5((form.signature() + name
-                    + str(sorted(default_parameters["coffee"].items()))
-                    + str(sorted(parameters.items()))
-                    + str(number_map)
-                    + str(type(interface))
-                    + str(coffee)
-                    + str(diagonal)).encode()).hexdigest(), form.ufl_domains()[0].comm
+#             comm.bcast(val, root=0)
+#         else:
+#             val = comm.bcast(None, root=0)
 
-    def __init__(self, form, name, parameters, number_map, interface, coffee=False, diagonal=False):
+#         if val is None:
+#             raise KeyError(f"Object with key {key} not found")
+#         return cls._cache.setdefault((key, comm.py2f()), pickle.loads(val))
+
+#     @classmethod
+#     def _cache_store(cls, key, val):
+#         key, comm = key
+#         cls._cache[(key, comm.py2f())] = val
+#         _ensure_cachedir(comm=comm)
+#         if comm.rank == 0:
+#             val._key = key
+#             shard, disk_key = key[:2], key[2:]
+#             filepath = os.path.join(cls._cachedir, shard, disk_key)
+#             tempfile = os.path.join(cls._cachedir, shard, "%s_p%d.tmp" % (disk_key, os.getpid()))
+#             # No need for a barrier after this, since non root
+#             # processes will never race on this file.
+#             os.makedirs(os.path.join(cls._cachedir, shard), exist_ok=True)
+#             with gzip.open(tempfile, "wb") as f:
+#                 pickle.dump(val, f, 0)
+#             os.rename(tempfile, filepath)
+#         comm.barrier()
+
+def tsfc_kernel_key(form, name, parameters, number_map, interface, coffee=False, diagonal=False):
+    # FIXME Making the COFFEE parameters part of the cache key causes
+    # unnecessary repeated calls to TSFC when actually only the kernel code
+    # needs to be regenerated
+    return md5((form.signature() + name
+                + str(sorted(default_parameters["coffee"].items()))
+                + str(sorted(parameters.items()))
+                + str(number_map)
+                + str(type(interface))
+                + str(coffee)
+                + str(diagonal)).encode()).hexdigest(), form.ufl_domains()[0].comm.py2f()
+
+
+SplitKernel = collections.namedtuple("SplitKernel", ["indices",
+                                                     "kinfo"])
+
+@cached(LRUCache(maxsize=128), key=tsfc_kernel_key)
+def make_tsfc_kernel(form, name, parameters, number_map, interface, coffee=False, diagonal=False):
         """A wrapper object for one or more TSFC kernels compiled from a given :class:`~ufl.classes.Form`.
 
         :arg form: the :class:`~ufl.classes.Form` from which to compile the kernels.
@@ -125,8 +142,6 @@ class TSFCKernel(Cached):
                          to the split global coefficient numbers.
         :arg interface: the KernelBuilder interface for TSFC (may be None)
         """
-        if self._initialized:
-            return
         tree = tsfc_compile_form(form, prefix=name, parameters=parameters, interface=interface, coffee=coffee, diagonal=diagonal)
         kernels = []
         for kernel in tree:
@@ -147,12 +162,7 @@ class TSFCKernel(Cached):
                                       pass_layer_arg=False,
                                       needs_cell_sizes=kernel.needs_cell_sizes,
                                       tsfc_kernel_args=kernel.arguments))
-        self.kernels = tuple(kernels)
-        self._initialized = True
-
-
-SplitKernel = collections.namedtuple("SplitKernel", ["indices",
-                                                     "kinfo"])
+        return TSFCKernel(kernels)
 
 
 @PETSc.Log.EventDecorator()
@@ -225,7 +235,7 @@ def compile_form(form, name, parameters=None, split=True, interface=None, coffee
                           for (n, c) in enumerate(f.coefficients()))
 
         prefix = name + "".join(map(str, (i for i in idx if i is not None)))
-        kinfos = TSFCKernel(f, prefix, parameters,
+        kinfos = make_tsfc_kernel(f, prefix, parameters,
                             number_map, interface, coffee, diagonal).kernels
         for kinfo in kinfos:
             kernels.append(SplitKernel(idx, kinfo))
