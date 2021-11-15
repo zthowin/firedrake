@@ -527,7 +527,6 @@ class LocalLoopyKernelBuilder(object):
                                 kernel_args.CellOrientationsKernelArg.name))
 
         if kinfo.needs_cell_sizes:
-            raise NotImplementedError
             self.bag.needs_cell_sizes = True
             kernel_data.append((mesh.cell_sizes,
                                 kernel_args.CellSizesKernelArg.name))
@@ -714,10 +713,11 @@ class LocalLoopyKernelBuilder(object):
             args.append(kernel_args.CellOrientationsKernelArg(ori_extent))
 
         if self.bag.needs_cell_sizes:
-            raise NotImplementedError
-            siz_extent = self.extent(self.expression.ufl_domain().cell_sizes)
+            myelem = self.expression.ufl_domain().cell_sizes.ufl_element()
+            finat_element = create_element(myelem)
+            isreal = myelem.family() == "Real"
             args.append(kernel_args.CellSizesKernelArg(
-                        shape=siz_extent, dtype=self.tsfc_parameters["scalar_type"]))
+                        finat_element, isreal, dtype=self.tsfc_parameters["scalar_type"]))
 
         for coeff, val in self.bag.coefficients.items():
             if isinstance(val, OrderedDict):
