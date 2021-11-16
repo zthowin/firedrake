@@ -140,6 +140,8 @@ def test_poisson_in_mixed_plus_vfs_components(V, mat_type, make_val):
         assert np.allclose(actual, expect)
 
 
+@pytest.mark.xfail(raises=AssertionError,
+                   reason="Cannot currently determine component from UFL description")
 def test_cant_integrate_subscripted_VFS(V):
     f = Function(V)
     f.assign(Constant([2, 1]))
