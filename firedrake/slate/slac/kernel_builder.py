@@ -722,11 +722,11 @@ class LocalLoopyKernelBuilder(object):
         for coeff, val in self.bag.coefficients.items():
             if isinstance(val, OrderedDict):
                 for sub_coeff, name in val.items():
-                    assert coeff.ufl_element().family() != "Real"
-
-                    finat_element = create_element(sub_coeff.ufl_element())
+                    ufl_element = sub_coeff.ufl_element()
+                    finat_element = create_element(ufl_element)
+                    isreal = ufl_element.family() == "Real"
                     arg = kernel_args.CoefficientKernelArg(
-                        name, finat_element, dtype=self.tsfc_parameters["scalar_type"]
+                        name, finat_element, isreal, dtype=self.tsfc_parameters["scalar_type"]
                     )
                     args.append(arg)
             else:

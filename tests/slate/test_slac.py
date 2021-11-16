@@ -55,7 +55,7 @@ def tensor(V, int_type, request):
 
 
 # Caching currently disabled
-@pytest.mark.xfail
+@pytest.mark.skip
 def test_determinism_and_caching(tensor):
     """Tests that the :meth:'compile_slate_expression' forms
     a numerically deterministic system. That is, produced kernels
