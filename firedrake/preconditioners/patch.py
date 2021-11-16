@@ -312,7 +312,7 @@ def residual_funptr(form, state):
 
         wrapper_knl_args = [a.wrapper_kernel_arg for a in args]
         mod = op2.WrapperKernel(kinfo.kernel, wrapper_knl_args, subset=True)
-        kernels.append(CompiledKernel(mod._fun, kinfo))
+        kernels.append(CompiledKernel(mod.compile(iterset.comm), kinfo))
     return cell_kernels, int_facet_kernels
 
 
