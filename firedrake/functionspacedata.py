@@ -402,17 +402,6 @@ def entity_permutations_key(entity_permutations):
     key = tuple(key)
     return key
 
-def is_real_tensor_product(ufl_element):
-    real_tensorproduct = False
-
-    scalar_element = ufl_element
-    if isinstance(ufl_element, (ufl.VectorElement, ufl.TensorElement)):
-        scalar_element = ufl_element.sub_elements()[0]
-    if isinstance(scalar_element, ufl.TensorProductElement):
-        a, b = scalar_element.sub_elements()
-        real_tensorproduct = b.family() == "Real"
-    return real_tensorproduct
-
 
 def preprocess_finat_element(finat_element):
     """Preprocess a UFL element for descretised representation
@@ -443,8 +432,8 @@ class FunctionSpaceData(object):
 
     @PETSc.Log.EventDecorator()
     def __init__(self, mesh, ufl_element):
-        real_tensorproduct = is_real_tensor_product(ufl_element)
         finat_element = create_element(ufl_element)
+        real_tensorproduct = eutils.is_real_tensor_product_element(finat_element)
         entity_dofs = preprocess_finat_element(finat_element)
         nodes_per_entity = tuple(mesh.make_dofs_per_plex_entity(entity_dofs))
         try:

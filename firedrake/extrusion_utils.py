@@ -3,6 +3,7 @@ import itertools
 import numpy
 import islpy as isl
 
+import finat
 from pyop2 import op2
 from firedrake.petsc import PETSc
 from firedrake.utils import IntType, RealType, ScalarType
@@ -336,3 +337,17 @@ def calc_offset(cell, entity_dofs, ndofs, real_tensorproduct=False):
                 for i in dof_indices:
                     dof_offset[i] = entity_offset[b]
     return dof_offset
+
+
+def is_real_tensor_product_element(element):
+    """Is the provided FInAT element a tensor product involving the real space?
+
+    :arg element: A scalar FInAT element.
+    """
+    assert not isinstance(element, finat.TensorFiniteElement)
+
+    if isinstance(element, finat.TensorProductElement):
+        _, factor = element.factors
+        return isinstance(factor, finat.Real)
+    else:
+        return False
