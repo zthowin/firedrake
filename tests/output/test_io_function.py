@@ -118,7 +118,7 @@ def _load_check_save_functions(filename, func_name, comm, method, mesh_name, var
     VB = fB.function_space()
     fBe = Function(VB)
     _initialise_function(fBe, _get_expr(VB), method)
-    assert assemble(inner(fB - fBe, fB - fBe) * dx) < 1.e-14
+    assert assemble(inner(fB - fBe, fB - fBe) * dx) < 5.e-12
     # Save
     with CheckpointFile(filename, 'w', comm=comm) as afile:
         afile.save_function(fB)
@@ -358,8 +358,8 @@ def test_io_function_mixed_vector(cell_type, tmpdir):
 
 
 @pytest.mark.parallel(nprocs=2)
-@pytest.mark.parametrize('cell_family_degree_vfamily_vdegree', [("triangle", "BDMF", 4, "DG", 3),
-                                                                ("quadrilateral", "RTCF", 4, "DG", 3)])
+@pytest.mark.parametrize('cell_family_degree_vfamily_vdegree', [("triangle", "BDMF", 2, "DG", 1),
+                                                                ("quadrilateral", "RTCF", 2, "DG", 1)])
 def test_io_function_extrusion(cell_family_degree_vfamily_vdegree, tmpdir):
     cell_type, family, degree, vfamily, vdegree = cell_family_degree_vfamily_vdegree
     filename = join(str(tmpdir), "test_io_function_extrusion_dump.h5")
@@ -433,8 +433,8 @@ def test_io_function_vector_extrusion_real(cell_family_degree_dim, tmpdir):
 
 
 @pytest.mark.parallel(nprocs=3)
-@pytest.mark.parametrize('cell_family_degree_dim', [("triangle", "P", 4, 2, "BDMF", 1, "DG", 2, 2),
-                                                    ("quadrilateral", "Q", 3, 2, "RTCF", 2, "DG", 2, 2)])
+@pytest.mark.parametrize('cell_family_degree_dim', [("triangle", "P", 1, 2, "BDMF", 1, "DG", 2, 2),
+                                                    ("quadrilateral", "Q", 1, 2, "RTCF", 1, "DG", 0, 2)])
 def test_io_function_mixed_vector_extrusion_real(cell_family_degree_dim, tmpdir):
     cell_type, family0, degree0, dim0, family1, degree1, vfamily1, vdegree1, dim1 = cell_family_degree_dim
     filename = join(str(tmpdir), "test_io_function_mixed_vector_extrusion_real_dump.h5")
